@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>shaxed model preview</title>
+<style>
+  :root{--panel:rgba(30,32,36,.93);--line:#454a53;--txt:#dfe3ea;--dim:#9aa1ad;--acc:#7aa7ff}
+  html,body{margin:0;height:100%;background:#2b2d31;overflow:hidden;font:13px system-ui,sans-serif;color:var(--txt)}
+  #hud{position:fixed;left:12px;top:10px;white-space:pre;opacity:.85;pointer-events:none;line-height:1.45}
+  #err{position:fixed;left:12px;bottom:10px;max-width:calc(100vw - 340px);color:#ff8f8f;white-space:pre-wrap}
+
+  #open{position:fixed;right:12px;top:12px;display:none;padding:7px 12px;border-radius:8px}
+  #panel{position:fixed;right:12px;top:12px;width:292px;max-height:calc(100vh - 24px);overflow:auto;box-sizing:border-box;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;backdrop-filter:blur(8px);padding:4px 14px 14px}
+  body.collapsed #panel{display:none} body.collapsed #open{display:block}
+  #panel header{display:flex;align-items:center;justify-content:space-between;padding:10px 0 4px;font-weight:600;font-size:14px}
+  #panel h3{margin:16px 0 6px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;
+    display:flex;align-items:center;gap:6px}
+  #panel h3 .sp{flex:1}
+  button{font:inherit;color:var(--txt);background:#3a3e46;border:1px solid var(--line);border-radius:6px;padding:3px 9px;cursor:pointer}
+  button:hover{background:#464b55} button.sm{padding:1px 7px;font-size:11px}
+  button.wide{width:100%;margin-top:6px;padding:6px}
+  ul{list-style:none;margin:0;padding:0}
+  #models li{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:7px}
+  #models li:hover{background:rgba(255,255,255,.05)}
+  #models label{display:flex;align-items:center;gap:8px;flex:1;min-width:0;cursor:pointer}
+  #models .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #models .meta{display:block;font-size:11px;color:var(--dim)} #models .meta.bad{color:#ff8f8f}
+  #models kbd{font:11px ui-monospace,monospace;color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+  #models .empty{color:var(--dim);padding:6px}
+  input[type=checkbox]{accent-color:var(--acc);width:15px;height:15px;margin:0;flex:none}
+  .row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:2px 8px;padding:4px 0}
+  .row output{color:var(--dim);font-variant-numeric:tabular-nums;font-size:12px}
+  .row input[type=range]{grid-column:1/3;width:100%;margin:0;accent-color:var(--acc)}
+  .chk{display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer}
+  .chk small{color:var(--dim)}
+  .hint{color:var(--dim);font-size:11px;line-height:1.4;margin:6px 0 0}
+  @media (max-width:640px){#panel{width:calc(100vw - 24px)} #err{max-width:calc(100vw - 24px);bottom:auto;top:44px}}
+</style>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<div id="hud">loading...</div><div id="err"></div>
+<button id="open" title="Show settings">&#9881; Settings</button>
+<aside id="panel">
+  <header>Settings <button id="collapse" class="sm" title="Hide panel">Hide</button></header>
+
+  <h3>Models <span class="sp"></span>
+    <button id="all" class="sm">All</button><button id="none" class="sm">None</button><button id="rescan" class="sm" title="Re-read public/models">Rescan</button></h3>
+  <ul id="models"></ul>
+
+  <h3>Walk</h3>
+  <label class="chk"><input type="checkbox" id="walk"> Walk animation <small>(Space)</small></label>
+  <div id="walkctl"></div>
+  <p class="hint">Models without their own animation get an automatic rig: hips, knees, shoulders and elbows are weighted from body proportions, then driven by a procedural walk cycle.</p>
+
+  <h3>Scene</h3>
+  <label class="chk"><input type="checkbox" id="useClips"> Use built-in animation when a model has one</label>
+  <label class="chk"><input type="checkbox" id="headFollow"> Head follows mouse</label>
+  <label class="chk"><input type="checkbox" id="floorScroll"> Scroll floor with the walk</label>
+  <label class="chk"><input type="checkbox" id="sync"> Walk in sync</label>
+  <label class="chk"><input type="checkbox" id="matchHeight"> Match model heights</label>
+  <div id="scenectl"></div>
+  <button id="frame" class="wide">Re-frame camera</button>
+  <button id="reset" class="wide">Reset settings</button>
+</aside>
+
+<script type="module">
+// Serve over http (see preview.bat). Every .glb/.gltf in public/models/ is listed in the Models section.
+// Open preview.html?model=path/to/other.glb to add a model from somewhere else.
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const MODELS_DIR = new URL('public/models/', location.href).href;
+const $ = id => document.getElementById(id);
+const hud = $('hud'), err = $('err');
+const BG = 0x3a3d43;
+const rad = THREE.MathUtils.degToRad;
+const clamp = THREE.MathUtils.clamp;
+const sstep = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); }; // works for e0 > e1 too
+
+/* ---------------------------------------------------------------- settings */
+const DEFAULTS = { walk: true, speed: 1, stride: 25, knee: 45, arms: 28, armOut: 4, elbow: 25, bob: 1, sway: 2, tilt: 1.5, lean: 3,
+  useClips: true, headFollow: true, floorScroll: true, sync: true, matchHeight: false, spacing: 0.6 };
+const WALK_CTRLS = [
+  ['speed', 'Speed', 0.1, 3, 0.05, v => v.toFixed(2) + '×'],
+  ['stride', 'Stride (leg swing)', 0, 45, 1, v => v + '°'],
+  ['knee', 'Knee bend', 0, 80, 1, v => v + '°'],
+  ['arms', 'Arm swing', 0, 60, 1, v => v + '°'],
+  ['armOut', 'Arm spread', 0, 15, 0.5, v => v.toFixed(1) + '°'],
+  ['elbow', 'Elbow bend', 0, 70, 1, v => v + '°'],
+  ['bob', 'Body bob', 0, 2, 0.05, v => v.toFixed(2) + '×'],
+  ['sway', 'Hip sway', 0, 6, 0.1, v => v.toFixed(1) + ' cm'],
+  ['tilt', 'Body tilt', 0, 8, 0.1, v => v.toFixed(1) + '°'],
+  ['lean', 'Forward lean', 0, 12, 0.5, v => v.toFixed(1) + '°'],
+];
+const SCENE_CTRLS = [['spacing', 'Model spacing', 0.1, 3, 0.05, v => v.toFixed(2) + ' m']];
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('shaxed.preview.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('shaxed.preview.' + k, JSON.stringify(v)); } catch {} },
+};
+const S = { ...DEFAULTS, ...store.get('settings', {}) };
+const saveSettings = () => store.set('settings', S);
+
+/* ------------------------------------------------------------------- scene */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.insertBefore(renderer.domElement, document.body.firstChild);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(BG); scene.fog = new THREE.Fog(BG, 9, 26);
+const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+const key = new THREE.DirectionalLight(0xffffff, 1.4); key.position.set(2, 4, 3.5); key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048); key.shadow.bias = -0.0004; key.shadow.normalBias = 0.02; key.shadow.camera.near = 0.5; key.shadow.camera.far = 20;
+scene.add(key, key.target);
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.01, 100);
+camera.position.set(0, 1, 6);
+const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true;
+
+const TILE = 0.5, FLOOR_SIZE = 40;
+const floorTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
+  g.fillStyle = '#4a4e56'; g.fillRect(0, 0, 256, 256); g.strokeStyle = '#5f646e'; g.lineWidth = 5; g.strokeRect(0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8; t.repeat.set(FLOOR_SIZE / TILE, FLOOR_SIZE / TILE); return t;
+})();
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: floorTex, roughness: 1 }));
+floor.receiveShadow = true; scene.add(floor);
+// Plane local +y maps to world -z, so a falling texture offset slides the pattern towards -z: models appear to walk towards +z.
+
+const mouse = new THREE.Vector2();
+addEventListener('pointermove', e => { mouse.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); });
+
+/* ------------------------------------------------------------- panel / view */
+let panelOpen = !store.get('collapsed', false);
+function panelInset() { return panelOpen && innerWidth > 640 ? $('panel').offsetWidth + 24 : 0; }
+function updateView() {
+  const pw = panelInset();
+  camera.aspect = innerWidth / innerHeight;
+  camera.setViewOffset(innerWidth, innerHeight, pw / 2, 0, innerWidth, innerHeight); // keep models centred in the free area
+  camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight);
+}
+function setPanel(open) { panelOpen = open; document.body.classList.toggle('collapsed', !open); store.set('collapsed', !open); updateView(); frame(); }
+$('collapse').onclick = () => setPanel(false); $('open').onclick = () => setPanel(true);
+addEventListener('resize', () => { updateView(); frame(); });
+
+/* ------------------------------------------------------------------- models */
+const models = [];            // see makeEntry()
+let enabledNames = new Set(store.get('enabled', []));
+let walkAmt = S.walk ? 1 : 0, phase = 0, hasEnabledSaved = enabledNames.size > 0;
+const loader = new GLTFLoader();
+
+const makeEntry = (name, url) => ({ name, url, enabled: false, state: 'idle', holder: null, root: null, cx: 0, cz: 0, minY: 0, w: 1, h: 1,
+  tris: 0, kind: '', note: '', tx: 0, curX: 0, ts: 1, cs: 0, rig: null, mixer: null, action: null, clipOn: false, head: null, el: null });
+
+async function listFolder() {
+  const found = new Map();
+  try {
+    const r = await fetch(MODELS_DIR, { cache: 'no-store' });
+    if (r.ok) {
+      const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+      doc.querySelectorAll('a[href]').forEach(a => {
+        const u = new URL(a.getAttribute('href'), MODELS_DIR);
+        const name = decodeURIComponent(u.pathname.split('/').pop());
+        if (u.href.startsWith(MODELS_DIR) && /\.(glb|gltf)$/i.test(name)) found.set(name, u.href);
+      });
+    }
+  } catch {}
+  if (!found.size) { // server without directory listings: optional manifest, then the known default
+    try {
+      const r = await fetch(MODELS_DIR + 'index.json', { cache: 'no-store' });
+      if (r.ok) (await r.json()).forEach(n => found.set(n, MODELS_DIR + encodeURIComponent(n)));
+    } catch {}
+  }
+  if (!found.size) found.set('marius-hero.glb', MODELS_DIR + 'marius-hero.glb');
+  return [...found].sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true })).map(([name, url]) => ({ name, url }));
+}
+
+let lastListing = '';
+async function scan(first = false, quiet = false) {
+  const list = await listFolder();
+  const q = new URLSearchParams(location.search).get('model');
+  if (first && q) { const u = new URL(q, location.href); list.push({ name: decodeURIComponent(u.pathname.split('/').pop()), url: u.href, extra: true }); }
+  const sig = list.map(l => l.name).join('|');
+  if (quiet && sig === lastListing) return; lastListing = sig;
+  for (const l of list) if (!models.some(m => m.name === l.name)) models.push(makeEntry(l.name, l.url));
+  for (let i = models.length - 1; i >= 0; i--) if (!list.some(l => l.name === models[i].name)) { removeModel(models[i]); models.splice(i, 1); }
+  models.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (first) {
+    const wanted = q ? new Set([models.find(m => m.url === new URL(q, location.href).href)?.name]) : enabledNames;
+    models.forEach(m => { m.enabled = wanted.has(m.name); });
+    if (!models.some(m => m.enabled) && models.length) models[0].enabled = true; // never start empty
+  }
+  buildList(); models.filter(m => m.enabled).forEach(ensureLoaded); layout(); frame();
+}
+
+function removeModel(m) { if (m.holder) { scene.remove(m.holder); m.holder.traverse(o => { if (o.geometry) o.geometry.dispose(); }); } }
+function persistEnabled() { store.set('enabled', models.filter(m => m.enabled).map(m => m.name)); }
+
+function ensureLoaded(m) {
+  if (m.state !== 'idle' && m.state !== 'error') return; // a failed model is retried when toggled on again
+  m.state = 'loading'; err.textContent = ''; updateRow(m);
+  loader.load(m.url, gltf => { try { setupModel(m, gltf); m.state = 'ready'; } catch (e) { fail(m, e); } updateRow(m); layout(); frame(); updateHud(); },
+    undefined, e => { fail(m, e); updateRow(m); });
+}
+function fail(m, e) {
+  m.state = 'error'; m.note = (e && e.message) || String(e);
+  err.textContent = `LOAD FAILED: ${m.name}: ${m.note}\nOpen this page through http://localhost:8123/preview.html (not by double-clicking the file).`;
+}
+
+const HEAD_RE = /^head$/i;
+const LEG_RE = /trouser|pant|jean|shoe|boot|sneaker|sock|\bleg|foot|feet|skirt|short|loafer/i;
+const underHead = (o, root) => { for (let p = o; p && p !== root; p = p.parent) if (HEAD_RE.test(p.name)) return true; return false; };
+const chainName = (o, root) => { let s = ''; for (let p = o; p && p !== root; p = p.parent) s += p.name + ' '; return s; };
+
+function setupModel(m, gltf) {
+  const root = gltf.scene;
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+  m.cx = c.x; m.cz = c.z; m.minY = box.min.y; m.w = Math.max(size.x, size.z * 0.5, 0.1); m.h = Math.max(size.y, 0.1);
+  let tris = 0, skinned = false;
+  root.traverse(o => { if (o.isMesh) { const g = o.geometry; tris += (g.index ? g.index.count : g.attributes.position.count) / 3; if (o.isSkinnedMesh) skinned = true; } });
+  m.tris = Math.round(tris);
+  m.head = root.getObjectByName('Head');
+
+  const clips = gltf.animations || [];
+  const humanoid = size.y / Math.max(size.x, size.z) > 1.6;
+  if (clips.length) {
+    const clip = clips.find(a => /walk/i.test(a.name)) || clips[0];
+    m.mixer = new THREE.AnimationMixer(root); m.action = m.mixer.clipAction(clip); m.kind = 'clip'; m.note = clip.name || 'clip';
+  } else if (!skinned && humanoid) {
+    m.rig = buildRig(root, box); m.kind = m.rig ? 'rig' : 'rigid';
+  } else m.kind = 'rigid';
+  if (m.kind === 'rigid') m.note = skinned ? 'own skeleton, no clip' : 'not humanoid';
+
+  root.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = false; o.frustumCulled = !o.isSkinnedMesh && o.frustumCulled; } });
+  m.holder = new THREE.Group(); m.body = new THREE.Group(); m.holder.add(m.body); m.body.add(root); m.root = root;
+  m.holder.visible = false; m.holder.scale.setScalar(0.001); scene.add(m.holder);
+  m.fresh = true;
+}
+
+/* Splits a mesh into islands (vertices welded by position, then joined through shared triangles) and measures each one
+   in root space. Sleeves, trouser legs, shoes, buttons... are usually separate tubes inside one mesh, so a whole island can
+   be sent to the right limb instead of cutting the mesh with a height/width rule. */
+function meshIslands(geo, toRoot) {
+  const pos = geo.attributes.position, n = pos.count, v = new THREE.Vector3();
+  const P = new Float32Array(n * 3), rep = new Int32Array(n), weld = new Map();
+  for (let i = 0; i < n; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(toRoot); P[i * 3] = v.x; P[i * 3 + 1] = v.y; P[i * 3 + 2] = v.z;
+    const k = Math.round(pos.getX(i) * 1e5) + ',' + Math.round(pos.getY(i) * 1e5) + ',' + Math.round(pos.getZ(i) * 1e5);
+    const r = weld.get(k); if (r === undefined) { weld.set(k, i); rep[i] = i; } else rep[i] = r;
+  }
+  const parent = new Int32Array(n); for (let i = 0; i < n; i++) parent[i] = i;
+  const find = a => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
+  const idx = geo.index, count = idx ? idx.count : n, at = t => rep[idx ? idx.getX(t) : t];
+  for (let t = 0; t + 2 < count; t += 3) {
+    const a = find(at(t));
+    for (let j = 1; j < 3; j++) { const b = find(at(t + j)); if (b !== a) parent[b] = a; }
+  }
+  const slot = new Map(), list = [], of = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = find(rep[i]); let s = slot.get(r);
+    if (s === undefined) { s = list.length; slot.set(r, s); list.push({ x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity }); }
+    const b = list[s]; of[i] = s;
+    b.x0 = Math.min(b.x0, P[i * 3]); b.x1 = Math.max(b.x1, P[i * 3]); b.y0 = Math.min(b.y0, P[i * 3 + 1]); b.y1 = Math.max(b.y1, P[i * 3 + 1]);
+  }
+  for (const b of list) { b.cx = (b.x0 + b.x1) / 2; b.cy = (b.y0 + b.y1) / 2; }
+  return { P, of, list };
+}
+
+/* ----- automatic humanoid rig: bones + per-vertex skin weights from body proportions ----- */
+function buildRig(root, box) {
+  const H = box.max.y - box.min.y, y0 = box.min.y;
+  const hipY = y0 + 0.525 * H, kneeY = y0 + 0.27 * H, shY = y0 + 0.77 * H, elY = y0 + 0.60 * H;
+  const bones = [], bone = (name, x, y, z, parent) => { const b = new THREE.Bone(); b.name = 'rig_' + name; b.position.set(x, y, z); parent.add(b); bones.push(b); return b; };
+  // index: 0 base | 1 hip+ 2 knee+ | 3 hip- 4 knee- | 5 shoulder+ 6 elbow+ | 7 shoulder- 8 elbow-
+  const base = bone('base', 0, 0, 0, root);
+  const hipP = bone('hip+', 0.055 * H, hipY, 0, base), kneeP = bone('knee+', 0, kneeY - hipY, 0, hipP);
+  const hipN = bone('hip-', -0.055 * H, hipY, 0, base), kneeN = bone('knee-', 0, kneeY - hipY, 0, hipN);
+  const shP = bone('sh+', 0.125 * H, shY, 0, base), elP = bone('el+', 0, elY - shY, 0, shP);
+  const shN = bone('sh-', -0.125 * H, shY, 0, base), elN = bone('el-', 0, elY - shY, 0, shN);
+  root.updateMatrixWorld(true);
+  const skeleton = new THREE.Skeleton(bones);
+
+  const targets = []; root.traverse(o => { if (o.isMesh && !o.isSkinnedMesh && o.geometry.attributes.position && !underHead(o, root)) targets.push(o); });
+  const anyLegNamed = targets.some(o => LEG_RE.test(chainName(o, root)));
+  const rootInv = new THREE.Matrix4().copy(root.matrixWorld).invert(), toRoot = new THREE.Matrix4();
+  const w = new Float32Array(9), order = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+  let touched = 0;
+
+  // Pass 1: split every mesh into islands and classify them, so pass 2 can see the whole model (is anything a separate sleeve?
+  // how wide is the torso?) before deciding which vertices belong to an arm.
+  const prep = new Map(); let armsAreIslands = false, torsoHW = 0;
+  for (const o of targets) {
+    const named = LEG_RE.test(chainName(o, root));
+    // Arms: only meshes that are not trousers/shoes. Legs: every mesh below the hips, so a jacket hem or shirt tail follows
+    // the thighs together with the trousers underneath it instead of being pierced by them.
+    const wantArm = anyLegNamed ? !named : true;
+    toRoot.multiplyMatrices(rootInv, o.matrixWorld);
+    const isl = meshIslands(o.geometry, toRoot);
+    // An island is an arm when it sits out to the side of the body, below the shoulders (sleeve, cuff, hand, cuff button).
+    for (const b of isl.list) {
+      b.arm = wantArm && Math.abs(b.cx) > 0.085 * H && b.cy < shY; b.straddle = b.x0 < -0.03 * H && b.x1 > 0.03 * H; b.side = b.cx >= 0 ? 1 : -1;
+      if (b.arm) armsAreIslands = true; else if (b.straddle && b.cy > hipY) torsoHW = Math.max(torsoHW, -b.x0, b.x1); // widest piece spanning both sides of the body
+    }
+    prep.set(o, { named, wantArm, isl, fromRoot: toRoot.clone().invert() });
+  }
+
+  for (const o of targets) {
+    const { named, wantArm, isl, fromRoot } = prep.get(o), vv = new THREE.Vector3();
+    const geo = o.geometry, n = geo.attributes.position.count;
+    const si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
+    const islandArms = isl.list.some(b => b.arm); // arms are separate pieces of this mesh (or it is nothing but a hand/cuff piece, like a ring)
+    // A mesh with no separate sleeves (a T-shirt) in a model whose sleeves are separate pieces: only what sticks out past the torso is arm.
+    const loose = !islandArms && armsAreIslands && torsoHW > 0;
+    for (let i = 0; i < n; i++) {
+      const vx = isl.P[i * 3], vy = isl.P[i * 3 + 1], b = isl.list[isl.of[i]];
+      w.fill(0);
+      let armW = 0;
+      if (wantArm) {
+        if (islandArms) armW = b.arm ? sstep(shY + 0.01 * H, shY - 0.05 * H, vy) : 0;   // whole sleeve moves; only the shoulder cap fades into the torso
+        else armW = (loose ? sstep(torsoHW, torsoHW + 0.03 * H, Math.abs(vx)) : sstep(0.08 * H, 0.10 * H, Math.abs(vx)))
+          * sstep(shY + 0.02 * H, shY - 0.06 * H, vy) * sstep(y0 + 0.25 * H, y0 + 0.33 * H, vy);
+      }
+      const legW = islandArms && b.arm ? 0 : (1 - armW) * sstep(hipY + 0.02 * H, hipY - 0.06 * H, vy);
+      // Clothing that hangs over the thighs (jacket hem, shirt tail) sits only a millimetre or so outside the trouser legs, so a
+      // swinging thigh would show straight through it. Flare that skirt out by ~1 cm, fading to nothing above the hips.
+      if (!named && armW === 0 && !(islandArms && b.arm)) {
+        const f = 0.007 * H * sstep(hipY + 0.03 * H, hipY - 0.03 * H, vy), vz = isl.P[i * 3 + 2], r = Math.hypot(vx, vz);
+        if (f > 0 && r > 1e-4) { vv.set(vx + vx / r * f, vy, vz + vz / r * f).applyMatrix4(fromRoot); geo.attributes.position.setXYZ(i, vv.x, vv.y, vv.z); }
+      }
+      w[0] = 1 - armW - legW;
+      if (armW > 0) {
+        const s = (islandArms ? b.side : vx) >= 0 ? 0 : 2, e = sstep(elY + 0.03 * H, elY - 0.03 * H, vy);
+        w[5 + s] = armW * (1 - e); w[6 + s] = armW * e;
+      }
+      if (legW > 0) {
+        // a trouser leg / shoe is one tube -> it belongs wholly to one leg; pelvis, jacket and shirt blend left/right across the middle
+        // left/right blend width: sharp between the thighs, soft at hip/hem level; the jacket gets an extra-wide blend so its front
+        // seam does not tear open when one thigh swings forward and the other back
+        const bw = (0.006 + (named ? 0.019 : 0.039) * sstep(hipY - (named ? 0.08 : 0.085) * H, hipY - (named ? 0.03 : 0.05) * H, vy)) * H;
+        const sp = named && !b.straddle ? (b.side > 0 ? 1 : 0) : sstep(-bw, bw, vx), k = sstep(kneeY + 0.04 * H, kneeY - 0.04 * H, vy);
+        w[1] = legW * sp * (1 - k); w[2] = legW * sp * k; w[3] = legW * (1 - sp) * (1 - k); w[4] = legW * (1 - sp) * k;
+      }
+      order.sort((a, b) => w[b] - w[a]);
+      const sum = w[order[0]] + w[order[1]] + w[order[2]] + w[order[3]] || 1;
+      for (let j = 0; j < 4; j++) { si[i * 4 + j] = order[j]; sw[i * 4 + j] = w[order[j]] / sum; }
+      if (armW > 0 || legW > 0) touched++;
+    }
+    geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+    geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+    const sm = new THREE.SkinnedMesh(geo, o.material);
+    sm.name = o.name; sm.userData = o.userData; sm.position.copy(o.position); sm.quaternion.copy(o.quaternion); sm.scale.copy(o.scale);
+    const parent = o.parent; parent.add(sm); parent.remove(o);
+    root.updateMatrixWorld(true); sm.bind(skeleton);
+  }
+  if (!touched) return null;
+  return { hipP, kneeP, hipN, kneeN, shP, elP, shN, elN, legLen: hipY - y0 };
+}
+
+/* ------------------------------------------------------------ layout/camera */
+let frameGoal = null;
+function layout() {
+  const vis = models.filter(m => m.enabled && m.holder);
+  const refH = Math.max(...vis.map(m => m.h), 0);
+  let total = 0; vis.forEach(m => { m.ts = S.matchHeight ? refH / m.h : 1; total += m.w * m.ts; });
+  total += S.spacing * Math.max(vis.length - 1, 0);
+  let cur = -total / 2;
+  for (const m of vis) { m.tx = cur + (m.w * m.ts) / 2; cur += m.w * m.ts + S.spacing; if (m.fresh) { m.curX = m.tx; m.fresh = false; } }
+  models.forEach(m => { if (!(m.enabled && m.holder)) m.ts = 0; });
+  m_total = total; m_refH = refH;
+  const half = Math.max(3, total / 2 + 1.5); const sc = key.shadow.camera;
+  sc.left = sc.bottom = -half; sc.right = sc.top = half; sc.updateProjectionMatrix();
+}
+let m_total = 1, m_refH = 1.7;
+function frame() {
+  if (!m_refH) return;
+  const t = Math.tan(rad(camera.fov / 2)), freeAspect = Math.max((innerWidth - panelInset()) / innerHeight, 0.3);
+  const dist = Math.max(m_refH * 1.3 / (2 * t), m_total * 1.25 / (2 * t * freeAspect), 1.2);
+  frameGoal = { target: new THREE.Vector3(0, m_refH * 0.5, 0), dist };
+}
+controls.addEventListener('start', () => { frameGoal = null; });
+$('frame').onclick = () => { layout(); frame(); };
+
+/* --------------------------------------------------------------------- UI */
+function buildList() {
+  const ul = $('models'); ul.textContent = '';
+  if (!models.length) { const li = document.createElement('li'); li.className = 'empty'; li.textContent = 'No .glb or .gltf files found in public/models'; ul.appendChild(li); }
+  models.forEach((m, i) => {
+    const li = document.createElement('li'), lab = document.createElement('label'), cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = m.enabled; cb.onchange = () => setEnabled(m, cb.checked);
+    const txt = document.createElement('span'); txt.style.minWidth = 0;
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = m.name; nm.title = m.url;
+    const meta = document.createElement('span'); meta.className = 'meta';
+    txt.append(nm, meta); lab.append(cb, txt); li.appendChild(lab);
+    if (i < 9) { const k = document.createElement('kbd'); k.textContent = i + 1; li.appendChild(k); }
+    ul.appendChild(li); m.el = { cb, meta };
+    updateRow(m);
+  });
+  updateHud();
+}
+function updateRow(m) {
+  if (!m.el) return;
+  m.el.cb.checked = m.enabled;
+  const kind = { rig: 'auto-rigged walk', clip: 'clip: ' + m.note, rigid: 'bob only (' + m.note + ')' }[m.kind];
+  m.el.meta.className = 'meta' + (m.state === 'error' ? ' bad' : '');
+  m.el.meta.textContent = m.state === 'loading' ? 'loading…' : m.state === 'error' ? 'failed to load' : m.state === 'ready' ? `${m.tris.toLocaleString()} tris · ${kind}` : 'not loaded';
+}
+function setEnabled(m, on) { m.enabled = on; if (on) ensureLoaded(m); persistEnabled(); updateRow(m); layout(); frame(); updateHud(); }
+$('all').onclick = () => { models.forEach(m => { m.enabled = true; ensureLoaded(m); updateRow(m); }); persistEnabled(); layout(); frame(); updateHud(); };
+$('none').onclick = () => { models.forEach(m => { m.enabled = false; updateRow(m); }); persistEnabled(); layout(); updateHud(); };
+$('rescan').onclick = () => scan(false, false);
+addEventListener('focus', () => scan(false, true));
+
+function updateHud() {
+  const vis = models.filter(m => m.enabled && m.state === 'ready');
+  const tris = vis.reduce((a, m) => a + m.tris, 0);
+  hud.textContent = `shaxed model preview\n${vis.length} of ${models.length} model${models.length === 1 ? '' : 's'} shown` + (vis.length ? ` | ${tris.toLocaleString()} triangles` : '') +
+    `\nDrag to orbit, scroll to zoom. Space = walk on/off, 1-9 = toggle models.` + (vis.some(m => m.head) ? '\nMove the mouse: the head follows it.' : '');
+}
+
+function slider(host, [key, label, min, max, step, fmt]) {
+  const row = document.createElement('label'); row.className = 'row';
+  const t = document.createElement('span'); t.textContent = label;
+  const out = document.createElement('output');
+  const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step;
+  const sync = () => { inp.value = S[key]; out.textContent = fmt(+S[key]); };
+  inp.oninput = () => { S[key] = +inp.value; out.textContent = fmt(S[key]); saveSettings(); if (key === 'spacing') { layout(); frame(); } };
+  row.append(t, out, inp); host.appendChild(row); return sync;
+}
+const syncs = [];
+WALK_CTRLS.forEach(c => syncs.push(slider($('walkctl'), c)));
+SCENE_CTRLS.forEach(c => syncs.push(slider($('scenectl'), c)));
+for (const k of ['walk', 'useClips', 'headFollow', 'floorScroll', 'sync', 'matchHeight']) {
+  const cb = $(k); syncs.push(() => { cb.checked = S[k]; });
+  cb.onchange = () => { S[k] = cb.checked; saveSettings(); if (k === 'matchHeight') { layout(); frame(); } };
+}
+const syncAll = () => syncs.forEach(f => f());
+$('reset').onclick = () => { Object.assign(S, DEFAULTS); saveSettings(); syncAll(); layout(); frame(); };
+syncAll();
+
+addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.target.matches?.('button,input[type=checkbox],select,textarea')) return;
+  if (e.code === 'Space') { e.preventDefault(); S.walk = !S.walk; saveSettings(); syncAll(); }
+  else if (/^[1-9]$/.test(e.key) && models[+e.key - 1]) setEnabled(models[+e.key - 1], !models[+e.key - 1].enabled);
+});
+
+/* --------------------------------------------------------------- animation */
+const CADENCE = 0.9; // full gait cycles (two steps) per second at speed 1
+function pose(m, dt, ph, amt) {
+  const useClip = m.mixer && S.useClips;
+  if (m.mixer) {
+    if (useClip) { if (!m.clipOn) { m.action.play(); m.clipOn = true; } m.mixer.update(dt * S.speed * amt); }
+    else if (m.clipOn) { m.mixer.stopAllAction(); m.clipOn = false; }
+  }
+  const b = m.body, k = m.h / 1.66; // sizes in the sliders are tuned for a 1.66 m figure
+  if (useClip) { b.position.set(0, 0, 0); b.rotation.set(0, 0, 0); }
+  else {
+    const s = Math.sin(ph), c = Math.cos(ph), A = rad(S.stride) * amt;
+    let bob;
+    if (m.rig) bob = -S.bob * m.rig.legLen * (1 - Math.cos(A * Math.abs(s)));       // keeps the planted foot on the floor
+    else bob = S.bob * 0.012 * m.h * amt * (0.5 + 0.5 * Math.cos(2 * ph));
+    b.position.set(S.sway * 0.01 * k * amt * -c, bob, 0);
+    b.rotation.set(rad(S.lean) * amt, 0, rad(S.tilt) * amt * c);
+    const r = m.rig;
+    if (r) {
+      const K = rad(S.knee) * amt, Sw = rad(S.arms) * amt, E = rad(S.elbow) * amt, Out = rad(S.armOut) * amt;
+      for (const [side, hip, knee, sh, el] of [[1, r.hipP, r.kneeP, r.shP, r.elP], [-1, r.hipN, r.kneeN, r.shN, r.elN]]) {
+        const sp = s * side, cp = c * side;              // this leg's swing and its velocity
+        hip.rotation.x = -A * sp;                        // forward swing = negative X rotation for a limb hanging down
+        knee.rotation.x = K * Math.max(0, cp);           // knee folds while the leg swings forward
+        const arm = -sp;                                 // arms swing against the leg on the same side
+        sh.rotation.x = -Sw * arm;
+        sh.rotation.z = side * Out;                      // arms hang slightly away from the body so sleeves clear the jacket and thighs
+        el.rotation.x = -E * (0.35 + 0.65 * (0.5 + 0.5 * arm));
+      }
+    }
+  }
+  if (m.head) {
+    const ty = S.headFollow ? mouse.x * 0.6 : 0, tx = S.headFollow ? -mouse.y * 0.3 : 0, f = 1 - Math.exp(-dt * 5);
+    m.head.rotation.y += (ty - m.head.rotation.y) * f; m.head.rotation.x += (tx - m.head.rotation.x) * f;
+  }
+}
+
+const clock = new THREE.Clock();
+function tick(forcedDt) {
+  const dt = forcedDt ?? Math.min(clock.getDelta(), 0.05), ease = 1 - Math.exp(-dt * 8);
+  walkAmt += ((S.walk ? 1 : 0) - walkAmt) * (1 - Math.exp(-dt * 5));
+  if (walkAmt < 0.002) walkAmt = 0;
+  phase += dt * Math.PI * 2 * CADENCE * S.speed * walkAmt;
+
+  let floorSpeed = 0, first = true, idx = 0;
+  for (const m of models) {
+    if (!m.holder) continue;
+    m.curX += (m.tx - m.curX) * ease; m.cs += (m.ts - m.cs) * ease;
+    m.holder.visible = m.cs > 0.02;   // shrinks to nothing when toggled off, then stops being drawn
+    if (!m.holder.visible) continue;
+    m.holder.scale.setScalar(m.cs);
+    m.holder.position.set(m.curX - m.cx * m.cs, -m.minY * m.cs, -m.cz * m.cs);
+    pose(m, dt, S.sync ? phase : phase + idx++ * 1.7, walkAmt);
+    if (first) { // floor speed follows the first visible model so its feet roughly stay planted
+      floorSpeed = m.rig ? 4 * m.rig.legLen * Math.sin(rad(S.stride)) * CADENCE * S.speed : 1.2 * S.speed;
+      floorSpeed *= m.cs; first = false;
+    }
+  }
+  if (S.floorScroll) floorTex.offset.y = (floorTex.offset.y - floorSpeed * walkAmt * dt / TILE) % 1;
+
+  if (frameGoal) {
+    const dir = camera.position.clone().sub(controls.target); const len = dir.length() || 1; dir.divideScalar(len);
+    const nd = len + (frameGoal.dist - len) * ease;
+    controls.target.lerp(frameGoal.target, ease);
+    camera.position.copy(controls.target).addScaledVector(dir, nd);
+    if (Math.abs(frameGoal.dist - len) < 0.003 && controls.target.distanceTo(frameGoal.target) < 0.003) frameGoal = null;
+  }
+  controls.update(); renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(() => tick());
+
+updateView(); document.body.classList.toggle('collapsed', !panelOpen);
+scan(true).then(() => { updateHud(); const m = models.find(x => x.enabled); if (m) { controls.target.set(0, 0.85, 0); camera.position.set(0, 1, 6); } frame(); })
+  .catch(e => { err.textContent = 'Could not scan public/models: ' + e.message; });
+</script>
+</body>
+</html>
