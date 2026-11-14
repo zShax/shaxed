@@ -1,7 +1,7 @@
 // HTML for every page. Plain template strings; esc() everything that is not already HTML.
 import { marked } from 'marked';
 import sanitizeHtml from 'sanitize-html';
-import * as cv from './cv.js';
+import { getCv } from './cvstore.js';
 
 const SITE_URL = (process.env.SITE_URL || '').replace(/\/+$/, '');
 
@@ -23,6 +23,7 @@ export function markdown(md) {
   });
 }
 
+const countWord = n => ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'][n] || String(n);
 const fmtDate = iso => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Bucharest' });
 const isoDay = iso => String(iso).slice(0, 10);
 
@@ -57,7 +58,7 @@ const plainHeader = `<header class="bar">
   <nav aria-label="Main"><a href="/#experience">Experience</a><a href="/#projects">Projects</a><a href="/blog">Blog</a><a href="/#contact">Contact</a></nav>
 </header>`;
 
-const contactFooter = `<footer class="contact" id="contact">
+const contactFooter = (cv = getCv()) => `<footer class="contact" id="contact">
   <div class="wrap">
     <h2>Get in touch</h2>
     <p class="contact-mail"><a href="mailto:${esc(cv.person.email)}">${esc(cv.person.email)}</a></p>
@@ -78,6 +79,7 @@ const postRow = p => `<li>
 
 /* ------------------------------------------------------------------ home */
 export function home(latestPosts) {
+  const cv = getCv();
   const description = 'Marius Toma, full-stack web developer and founder in Arad, Romania. CV, live projects and blog.';
   const head = `<link rel="preload" href="/fonts/bodoni/bodoni-moda-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
 <script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.min.js","three/addons/":"/vendor/three/addons/"}}</script>
@@ -101,8 +103,7 @@ export function home(latestPosts) {
 <main id="main">
   <section class="profile">
     <div class="wrap">
-      <p class="lead">${esc(cv.profile[0])}</p>
-      <p>${esc(cv.profile[1])}</p>
+      ${cv.profile.map((p, i) => `<p${i ? '' : ' class="lead"'}>${esc(p)}</p>`).join('\n      ')}
     </div>
   </section>
 
@@ -115,7 +116,7 @@ export function home(latestPosts) {
           <div>
             <h3>${esc(e.role)}</h3>
             <p class="org">${esc(e.org)}${e.note ? `<span>, ${esc(e.note)}</span>` : ''}</p>
-            <ul>${e.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>
+            ${e.points.length ? `<ul>${e.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
             ${e.tech ? `<p class="tech">Worked with ${esc(e.tech)}.</p>` : ''}
           </div>
         </li>`).join('\n        ')}
@@ -126,7 +127,7 @@ export function home(latestPosts) {
   <section class="built" id="projects">
     <div class="wrap">
       <h2>Things I built</h2>
-      <p class="built-intro">Four of them are live. Open one.</p>
+      <p class="built-intro">${cv.liveProjects.length === 1 ? 'One of them is live. Open it.' : `${countWord(cv.liveProjects.length)} of them are live. Open one.`}</p>
       <ul class="live">
         ${cv.liveProjects.map(p => `<li><a href="${esc(p.href)}"${out(p.href)}>
           <span class="live-domain">${esc(p.domain)}</span>
@@ -150,13 +151,13 @@ export function home(latestPosts) {
       <h2>Skills</h2>
       <dl class="rows">
         ${cv.skills.map(s => `<div><dt>${esc(s.group)}</dt><dd>${esc(s.items)}</dd></div>`).join('\n        ')}
-        <div><dt>Languages</dt><dd>${cv.languages.map(l => `${esc(l.name)} (${esc(l.level)})`).join(', ')}</dd></div>
+        ${cv.languages.length ? `<div><dt>Languages</dt><dd>${cv.languages.map(l => `${esc(l.name)} (${esc(l.level)})`).join(', ')}</dd></div>` : ''}
       </dl>
 
       <h2>Activities and awards</h2>
       <dl class="rows">
         ${cv.awards.map(a => `<div><dt>${esc(a.what)}</dt><dd>${esc(a.detail)}</dd></div>`).join('\n        ')}
-        <div><dt>Interests</dt><dd>${esc(cv.interests)}</dd></div>
+        ${cv.interests ? `<div><dt>Interests</dt><dd>${esc(cv.interests)}</dd></div>` : ''}
       </dl>
     </div>
   </section>
@@ -171,7 +172,7 @@ export function home(latestPosts) {
   </section>
 </main>
 
-${contactFooter}`;
+${contactFooter()}`;
   return layout({ title: 'Marius Toma, full-stack web developer', description, path: '/', body, head, bodyClass: 'home' });
 }
 
@@ -184,7 +185,7 @@ export function blogIndex(list) {
     ${list.length ? `<ol class="posts">\n      ${list.map(postRow).join('\n      ')}\n    </ol>` : '<p class="empty">Nothing published yet. The first post is on its way.</p>'}
   </div>
 </main>
-${contactFooter}`;
+${contactFooter()}`;
   return layout({ title: 'Blog, Marius Toma', description: 'Notes on building software, automation and running a small software company.', path: '/blog', body });
 }
 
@@ -200,7 +201,7 @@ export function blogPost(p, { draft = false } = {}) {
     <p class="more"><a href="/blog">All posts</a></p>
   </article>
 </main>
-${contactFooter}`;
+${contactFooter()}`;
   return layout({ title: `${p.title}, Marius Toma`, description: p.excerpt, path: `/blog/${p.slug}`, body, noindex: draft });
 }
 
@@ -228,9 +229,32 @@ export function admin({ signedIn, enabled }) {
       <button type="submit">Sign in</button>
       <p class="form-msg" role="alert"></p>
     </form>`
-    : `<div class="admin-head">
+    : `<nav class="admin-tabs" aria-label="Admin sections">
+      <a href="#posts" data-tab="posts">Posts</a><a href="#cv" data-tab="cv">CV</a>
+      <button type="button" id="logout" class="quiet">Sign out</button>
+    </nav>
+
+    <section id="tab-cv" hidden>
+      <div class="admin-head">
+        <h1>CV</h1>
+        <span><a href="/" target="_blank" rel="noopener">View the home page</a></span>
+      </div>
+      <p class="hint" id="cv-meta"></p>
+      <form id="cv-form" class="stack">
+        <div id="cv-fields"><p>Loading…</p></div>
+        <div class="actions cv-actions">
+          <button type="submit">Save CV</button>
+          <button type="button" id="cv-undo" class="quiet">Undo changes</button>
+          <button type="button" id="cv-reset" class="danger">Reset to cv.js</button>
+        </div>
+        <p class="form-msg" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="tab-posts">
+    <div class="admin-head">
       <h1>Posts</h1>
-      <span><button type="button" id="new">New post</button> <button type="button" id="logout" class="quiet">Sign out</button></span>
+      <span><button type="button" id="new">New post</button></span>
     </div>
     <p class="form-msg" id="list-msg" role="alert"></p>
     <ul id="post-list" class="admin-list"></ul>
@@ -251,7 +275,8 @@ export function admin({ signedIn, enabled }) {
         <button type="button" id="delete" class="danger" hidden>Delete post</button>
       </div>
       <p class="form-msg" role="alert"></p>
-    </form>`}
+    </form>
+    </section>`}
   </div>
 </main>
 <script type="module" src="/js/admin.js"></script>`;

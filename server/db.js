@@ -21,6 +21,11 @@ db.exec(`
     published_at TEXT
   );
   CREATE INDEX IF NOT EXISTS posts_published ON posts (published, published_at DESC);
+  CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 const q = {
@@ -78,4 +83,21 @@ export const posts = {
   },
 
   remove: id => q.remove.run(id).changes > 0,
+};
+
+// Small JSON blobs by key (the edited CV lives under "cv").
+const sq = {
+  get: db.prepare('SELECT value, updated_at FROM settings WHERE key = ?'),
+  set: db.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`),
+  remove: db.prepare('DELETE FROM settings WHERE key = ?'),
+};
+export const settings = {
+  get(key) {
+    const row = sq.get.get(key);
+    if (!row) return null;
+    try { return { value: JSON.parse(row.value), updated_at: row.updated_at }; } catch { return null; }
+  },
+  set(key, value) { sq.set.run(key, JSON.stringify(value), new Date().toISOString()); return value; },
+  remove: key => sq.remove.run(key).changes > 0,
 };

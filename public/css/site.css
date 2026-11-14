@@ -230,6 +230,20 @@ button.link:hover { background: none; text-decoration-thickness: 2px; }
 .form-msg { min-height: 1.5em; font-weight: 500; }
 .form-msg.bad { color: #a3170f; }
 @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+.admin-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 24px; margin-bottom: 36px; padding-bottom: 14px; border-bottom: 1px solid var(--rule); font-weight: 700; }
+.admin-tabs a { text-decoration: none; padding: 4px 0; border-bottom: 3px solid transparent; }
+.admin-tabs a[aria-current] { border-bottom-color: var(--flame); }
+.admin-tabs #logout { margin-left: auto; }
+.cv-section { border: 0; border-top: 3px solid var(--ink); padding: 18px 0 8px; margin: 0; display: grid; gap: 14px; }
+.cv-section legend { font: 700 1.25rem/1.2 var(--sans); padding: 0 10px 0 0; }
+.cv-group, .cv-item-body { display: grid; gap: 14px; }
+.cv-list { display: grid; gap: 10px; justify-items: start; }
+.cv-items { display: grid; gap: 12px; width: 100%; }
+.cv-items > li { border: 1px solid #aab1c4; border-radius: 3px; padding: 12px 14px 16px; background: #f7f8fb; }
+.cv-item-head { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.cv-item-title { flex: 1; font-weight: 700; overflow-wrap: anywhere; }
+button.small { padding: 7px 11px; font-size: 0.875rem; }
+.cv-actions { position: sticky; bottom: 0; padding: 14px 0; background: var(--paper, #eef1f6); border-top: 1px solid var(--rule); }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

@@ -1,4 +1,4 @@
-// All CV content on the home page lives here. Edit this file, restart the server, done.
+// Default CV content for the home page. The admin (/admin#cv) can override it; "Reset to cv.js" brings this back.
 
 export const person = {
   name: 'Marius Toma',

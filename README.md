@@ -7,7 +7,9 @@ Node + Express, no build step. Blog posts live in one SQLite file (`data/blog.db
 
 ```
 server/index.js      <- routes: pages, /api, static files
-server/cv.js         <- all CV text and the project links: edit here
+server/cv.js         <- default CV text and project links (the admin CV tab overrides it)
+server/cvstore.js    <- the CV the site shows: saved edits, else cv.js
+public/js/cv-schema.js <- CV fields: drives the admin form and save checks
 server/render.js     <- the HTML of every page
 server/db.js         <- blog storage
 server/auth.js       <- admin sign-in (one password, signed cookie)
@@ -25,7 +27,7 @@ copy .env.example .env      (set ADMIN_PASSWORD, 8+ characters)
 npm run dev                 -> http://localhost:3000
 ```
 
-Write posts at `/admin` (Markdown, live preview, draft or published). Public pages: `/`, `/blog`, `/blog/<slug>`,
+Write posts at `/admin` (Markdown, live preview, draft or published). Edit the CV text at `/admin#cv`; it is saved in the same SQLite file. Public pages: `/`, `/blog`, `/blog/<slug>`,
 `/blog/feed.xml`. JSON: `GET /api/posts`, `GET /api/posts/<slug>`; writes need the admin session.
 
 ### Deploy (Linux VPS, Docker + pm2)

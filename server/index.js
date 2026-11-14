@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { posts } from './db.js';
 import { isAdmin, requireAdmin, login, logout, adminEnabled } from './auth.js';
 import * as render from './render.js';
+import { getCv, cvMeta, saveCv, resetCv } from './cvstore.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 3000;
@@ -58,7 +59,8 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 /* ------------------------------------------------------------------- API */
 // Public:  GET /api/posts, GET /api/posts/:slug
-// Admin:   POST /api/login, POST /api/logout, GET /api/admin/posts[/:id], POST /api/posts, PUT|DELETE /api/posts/:id, POST /api/preview
+// Admin:   POST /api/login, POST /api/logout, GET /api/admin/posts[/:id], POST /api/posts, PUT|DELETE /api/posts/:id, POST /api/preview,
+//          GET|PUT|DELETE /api/admin/cv
 const api = express.Router();
 api.use(express.json({ limit: '2mb' }));
 api.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
@@ -111,6 +113,13 @@ api.delete('/posts/:id', requireAdmin, (req, res) => {
   if (!posts.remove(Number(req.params.id))) return res.status(404).json({ error: 'This post no longer exists.' });
   res.json({ ok: true });
 });
+api.get('/admin/cv', requireAdmin, (req, res) => res.json({ cv: getCv(), ...cvMeta() }));
+api.put('/admin/cv', requireAdmin, (req, res) => {
+  if (!req.body || typeof req.body.cv !== 'object' || Array.isArray(req.body.cv)) return res.status(400).json({ error: 'Send the CV as { cv: {...} }.' });
+  saveCv(req.body.cv);
+  res.json({ cv: getCv(), ...cvMeta() });
+});
+api.delete('/admin/cv', requireAdmin, (req, res) => { resetCv(); res.json({ cv: getCv(), ...cvMeta() }); });
 api.post('/preview', requireAdmin, (req, res) => res.json({ html: render.markdown(req.body?.body) }));
 api.use((req, res) => res.status(404).json({ error: 'No such endpoint.' }));
 app.use('/api', api);
