@@ -19,6 +19,7 @@ export const hero = {
 export const profile = [
   'I have a BSc in Computer Science, about a year and a half of full-stack web development behind me, and my own software company since December 2024.',
   'I build custom web applications, REST APIs, browser automations and AI/OCR data workflows that turn repetitive real-world processes into reliable tools. My background mixes computer science, years of customer-facing quality work, and economics. I am a first-year master’s student and I build with Claude Code.',
+  'I ship in small increments: a median commit of about 115 lines, with roughly 3.5 features for every fix.',
 ];
 
 export const experience = [
@@ -43,6 +44,9 @@ export const experience = [
       'Founded and built MailTempo, an AI-powered email-marketing SaaS for contact management, segmentation, personalization and campaign automation.',
       'Built the full stack: frontend, backend, REST APIs, authentication, PostgreSQL database and third-party integrations.',
       'Handle product decisions, deployment and ongoing development on my own, plus custom software projects for clients.',
+      'Built and set up many internal tools, such as full email apps integrated with Resend and the Cloudflare CLI.',
+      'Shipped 17 new projects in 2026 (about 500 commits across Shopify, WooCommerce, mapping and automation work), sustaining weekly output for 45 consecutive weeks.',
+      'Took projects from an empty repo to a deployed, multi-feature product in 3 to 6 days, for example a storefront plus automated catalog sync in under 3 days.',
     ],
     tech: 'Node.js, Express.js, Next.js, React, PostgreSQL, Prisma, PM2, Nginx, Docker, REST APIs, AI integrations, VPS management',
   },
@@ -59,7 +63,7 @@ export const experience = [
       'Set up analytics and conversion tracking with Google Tag Manager, GA4 and ad pixels (TikTok, Meta, Google, Pinterest); designed A/B tests.',
       'Designed and built campaign pages, debugged production issues and optimized performance.',
     ],
-    tech: 'JavaScript, TypeScript, React, Node.js, Express.js, PostgreSQL, Webpack, GitHub, HTML5, CSS3, SCSS, Tailwind CSS, Shopify Liquid and custom plugins, Lighthouse, Shogun, Elementor, REST APIs',
+    tech: 'JavaScript, TypeScript, React, Node.js, Express.js, PostgreSQL, Webpack, GitHub, HTML5, CSS3, SCSS, Tailwind CSS, Shopify Liquid and custom plugins, Lighthouse, Shogun, Elementor, REST and GraphQL APIs',
   },
   {
     when: 'Jun 2023 – Aug 2023',
@@ -90,7 +94,7 @@ export const liveProjects = [
     domain: 'arad.shaxed.com',
     href: 'https://arad.shaxed.com/',
     name: 'Confirm Humanity',
-    what: 'Connects volunteers, professionals and people looking for social events with the communities in Arad that need them. Third place at Hack4Arad 2026.',
+    what: 'Connects volunteers, professionals and people looking for social events with the communities in Arad that need them. Third place at Hack4Arad 2026 with 10+ real users in a week.',
   },
   {
     domain: 'getmailtempo.com',
@@ -155,6 +159,8 @@ export const languages = [
 
 // "At a glance": the four big figures.
 export const numbers = [
+  { figure: '17', label: 'projects shipped in 2026', detail: 'About 500 commits across Shopify, WooCommerce, mapping and automation work.' },
+  { figure: '45', label: 'weeks in a row', detail: 'Weekly output sustained for 45 consecutive weeks.' },
   { figure: '895', label: 'customer orders', detail: 'Run through the order-processing app I built at Starplast. None left unprocessed.' },
   { figure: '100+', label: 'standard procedures', detail: 'Written or improved at TELUS International. They cut resolution times.' },
   { figure: '6 + 3', label: 'stores and apps', detail: 'Six Shopify stores kept running and three internal apps built from scratch at Steelmonks.' },
