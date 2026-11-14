@@ -2,6 +2,24 @@
 import { marked } from 'marked';
 import sanitizeHtml from 'sanitize-html';
 import { getCv } from './cvstore.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Asset URLs carry a hash of the file (?v=…), so a deploy never meets an old copy in a browser or Cloudflare cache.
+const PUBLIC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const PROD = process.env.NODE_ENV === 'production';
+const hashes = new Map();
+const asset = url => {
+  if (!PROD || !hashes.has(url)) hashes.set(url, createHash('sha1').update(readFileSync(path.join(PUBLIC, url))).digest('hex').slice(0, 10));
+  return `${url}?v=${hashes.get(url)}`;
+};
+// Import map: every /js module resolves to its hashed URL, so imports between modules are fresh too.
+const importMap = (extra = {}) => {
+  const imports = Object.fromEntries(readdirSync(path.join(PUBLIC, 'js')).filter(f => f.endsWith('.js')).map(f => [`/js/${f}`, asset(`/js/${f}`)]));
+  return `<script type="importmap">${JSON.stringify({ imports: { ...imports, ...extra } })}</script>`;
+};
 
 const SITE_URL = (process.env.SITE_URL || '').replace(/\/+$/, '');
 
@@ -27,7 +45,7 @@ const countWord = n => ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Sev
 const fmtDate = iso => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Bucharest' });
 const isoDay = iso => String(iso).slice(0, 10);
 
-function layout({ title, description = '', path = '/', body, head = '', bodyClass = '', noindex = false }) {
+function layout({ title, description = '', path = '/', body, head = '', bodyClass = '', noindex = false, imports = {} }) {
   const canonical = SITE_URL ? `<link rel="canonical" href="${esc(SITE_URL + path)}">` : '';
   return `<!doctype html>
 <html lang="en">
@@ -43,7 +61,8 @@ ${noindex ? '<meta name="robots" content="noindex">' : canonical}
 <link rel="alternate" type="application/rss+xml" title="Marius Toma: blog" href="/blog/feed.xml">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preload" href="/fonts/archivo/archivo-latin-wdth-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="/css/site.css">
+<link rel="stylesheet" href="${asset('/css/site.css')}">
+${importMap(imports)}
 ${head}
 </head>
 <body class="${esc(bodyClass)}">
@@ -82,8 +101,7 @@ export function home(latestPosts) {
   const cv = getCv();
   const description = 'Marius Toma, full-stack web developer and founder in Arad, Romania. CV, live projects and blog.';
   const head = `<link rel="preload" href="/fonts/bodoni/bodoni-moda-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
-<script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.min.js","three/addons/":"/vendor/three/addons/"}}</script>
-<script type="module" src="/js/hero.js"></script>`;
+<script type="module" src="${asset('/js/hero.js')}"></script>`;
 
   const body = `<header class="hero" id="top">
   <nav class="hero-nav" aria-label="Main">
@@ -173,7 +191,8 @@ export function home(latestPosts) {
 </main>
 
 ${contactFooter()}`;
-  return layout({ title: 'Marius Toma, full-stack web developer', description, path: '/', body, head, bodyClass: 'home' });
+  return layout({ title: 'Marius Toma, full-stack web developer', description, path: '/', body, head, bodyClass: 'home',
+    imports: { three: '/vendor/three/build/three.module.min.js', 'three/addons/': '/vendor/three/addons/' } });
 }
 
 /* ------------------------------------------------------------------ blog */
@@ -279,7 +298,7 @@ export function admin({ signedIn, enabled }) {
     </section>`}
   </div>
 </main>
-<script type="module" src="/js/admin.js"></script>`;
+<script type="module" src="${asset('/js/admin.js')}"></script>`;
   return layout({ title: 'Admin, Marius Toma', path: '/admin', body, noindex: true });
 }
 
