@@ -96,6 +96,88 @@ const postRow = p => `<li>
         </div>
       </li>`;
 
+/* ------------------------------------------------------------ at a glance */
+// Charts in plain HTML and CSS: bars are positioned with custom properties, no chart library.
+const KINDS = { work: 'Work', own: 'My company', study: 'Study', lead: 'Leading' };
+const CEFR = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2', 'Native'];
+const pct = x => `${Math.max(0, Math.min(100, x)).toFixed(2)}%`;
+const ym = s => { const m = /^(\d{4})(?:-(\d{1,2}))?$/.exec(String(s || '').trim()); return m ? +m[1] * 12 + (m[2] ? +m[2] - 1 : 0) : null; };
+
+function yearsChart(items) {
+  const now = new Date();
+  const nowM = now.getFullYear() * 12 + now.getMonth();
+  const rows = items.map(t => ({ ...t, a: ym(t.from), b: t.to ? ym(t.to) : nowM, kind: KINDS[t.kind] ? t.kind : 'work' }))
+    .filter(t => t.a !== null && t.b !== null && t.b >= t.a);
+  if (!rows.length) return '';
+  const y0 = Math.floor(Math.min(...rows.map(r => r.a)) / 12);
+  const y1 = Math.floor(Math.max(nowM, ...rows.map(r => r.b)) / 12) + 1;
+  const span = (y1 - y0) * 12;
+  const at = m => pct(((m - y0 * 12) / span) * 100);
+  const years = Array.from({ length: y1 - y0 }, (_, i) => y0 + i);
+  const shown = [...new Set(rows.map(r => r.kind))];
+  const yr = (m, open) => (open ? 'now' : String(Math.floor(m / 12)));
+  return `<div class="years" style="--cols:${years.length};--now:${at(nowM)}">
+        <ul class="years-key">${shown.map(k => `<li class="k-${k}">${KINDS[k]}</li>`).join('')}</ul>
+        <ol class="years-rows">
+          ${rows.map(r => {
+            const from = yr(r.a), to = yr(r.b, !r.to);
+            return `<li class="k-${r.kind}">
+            <p class="years-label"><strong>${esc(r.label)}</strong> <span>${esc(r.what)}${r.what ? ', ' : ''}${from === to ? from : `${from} – ${to}`}</span></p>
+            <span class="years-track"><span class="years-bar${r.to ? '' : ' open'}" style="--a:${at(r.a)};--b:${at(r.b + 1)}"></span></span>
+          </li>`;
+          }).join('\n          ')}
+        </ol>
+        <p class="years-axis" aria-hidden="true"><span></span><span class="years-ticks">${years.map(y => `<span>${y}</span>`).join('')}</span></p>
+      </div>`;
+}
+
+function skillsChart(items) {
+  const rows = items.map(s => ({ ...s, at: String(s.usedAt || '').split(',').map(x => x.trim()).filter(Boolean) })).filter(s => s.area);
+  const cols = [...new Set(rows.flatMap(r => r.at))];
+  if (!rows.length || !cols.length) return '';
+  return `<table class="skillmap">
+        <thead><tr><th scope="col"><span class="sr-only">Area</span></th>${cols.map(c => `<th scope="col">${esc(c)}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${rows.map(r => `<tr>
+            <th scope="row"><strong>${esc(r.area)}</strong> <span>${esc(r.tools)}</span></th>
+            ${cols.map(c => r.at.includes(c) ? `<td class="yes" data-at="${esc(c)}"><span aria-hidden="true"></span><span class="sr-only">Used at ${esc(c)}</span></td>` : '<td class="no"></td>').join('')}
+          </tr>`).join('\n          ')}
+        </tbody>
+      </table>`;
+}
+
+function languagesChart(langs) {
+  const rows = langs.map(l => ({ ...l, i: CEFR.findIndex(c => c.toLowerCase() === String(l.level).trim().toLowerCase()) })).filter(l => l.i >= 0);
+  if (!rows.length) return '';
+  return `<div class="langs">
+        <ol>
+          ${rows.map(l => `<li${l.i === 6 ? ' class="native"' : ''}>
+            <span class="langs-name">${esc(l.name)}</span>
+            <span class="langs-track"><span class="langs-bar" style="--w:${pct(((l.i + 1) / CEFR.length) * 100)}"></span></span>
+            <span class="langs-level">${esc(CEFR[l.i])}</span>
+          </li>`).join('\n          ')}
+        </ol>
+        <p class="langs-scale" aria-hidden="true"><span></span><span class="langs-ticks">${CEFR.map(c => `<span>${c}</span>`).join('')}</span><span></span></p>
+      </div>`;
+}
+
+function glance(cv) {
+  const parts = [
+    cv.numbers.length && `<ul class="numbers">
+        ${cv.numbers.map(n => `<li><p class="numbers-figure">${esc(n.figure)}</p><p class="numbers-label">${esc(n.label)}</p><p class="numbers-detail">${esc(n.detail)}</p></li>`).join('\n        ')}
+      </ul>`,
+    cv.timeline.length && `<h3>Where the years went</h3>\n      ${yearsChart(cv.timeline)}`,
+    cv.skillMap.length && `<h3>What I use, and where</h3>\n      ${skillsChart(cv.skillMap)}`,
+    cv.languages.length && `<h3>Languages I work in</h3>\n      ${languagesChart(cv.languages)}`,
+  ].filter(Boolean);
+  return parts.length ? `<section class="block glance" id="glance">
+    <div class="wrap">
+      <h2>At a glance</h2>
+      ${parts.join('\n      ')}
+    </div>
+  </section>` : '';
+}
+
 /* ------------------------------------------------------------------ home */
 export function home(latestPosts) {
   const cv = getCv();
@@ -124,6 +206,8 @@ export function home(latestPosts) {
       ${cv.profile.map((p, i) => `<p${i ? '' : ' class="lead"'}>${esc(p)}</p>`).join('\n      ')}
     </div>
   </section>
+
+  ${glance(cv)}
 
   <section class="block" id="experience">
     <div class="wrap">

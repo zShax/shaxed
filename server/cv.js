@@ -153,4 +153,35 @@ export const languages = [
   { name: 'Spanish', level: 'A2' },
 ];
 
-export const interests = 'Artificial intelligence and AI safety, automation, software architecture, SaaS. Away from the screen: chess, climbing, ping pong, hiking.';
+// "At a glance": the four big figures.
+export const numbers = [
+  { figure: '895', label: 'customer orders', detail: 'Run through the order-processing app I built at Starplast. None left unprocessed.' },
+  { figure: '100+', label: 'standard procedures', detail: 'Written or improved at TELUS International. They cut resolution times.' },
+  { figure: '6 + 3', label: 'stores and apps', detail: 'Six Shopify stores kept running and three internal apps built from scratch at Steelmonks.' },
+  { figure: '4', label: 'prizes', detail: 'From hackathons and student conferences, 2022 to 2026.' },
+];
+
+// "Where the years went". from/to are YYYY-MM; leave `to` empty for "still going".
+// kind: work, own (my company), study, lead.
+export const timeline = [
+  { label: 'TELUS International', what: 'Customer service to analyst', kind: 'work', from: '2021-11', to: '2023-05' },
+  { label: 'GoIT Romania', what: 'Intensive coding course', kind: 'study', from: '2023-01', to: '2023-08' },
+  { label: 'San Francisco', what: 'Big Bus Tours, Applebee’s', kind: 'work', from: '2023-06', to: '2023-08' },
+  { label: 'BSc Computer Science', what: '“Aurel Vlaicu” University', kind: 'study', from: '2023-10', to: '2026-07' },
+  { label: 'Steelmonks', what: 'Web developer', kind: 'work', from: '2024-01', to: '2025-05' },
+  { label: 'Tela Creatrix', what: 'Founder, MailTempo', kind: 'own', from: '2024-12', to: '' },
+  { label: 'Starplast Engineering', what: 'Data entry, then automation', kind: 'work', from: '2026-02', to: '2026-09' },
+  { label: 'Toastmasters Arad', what: 'Club President', kind: 'lead', from: '2026-08', to: '2027-07' },
+  { label: 'Master’s, IASTE', what: '“Aurel Vlaicu” University', kind: 'study', from: '2026-10', to: '2027-07' },
+];
+
+// "What I use, and where". usedAt is a comma-separated list; each name becomes a column.
+export const skillMap = [
+  { area: 'Full-stack web', tools: 'React, Next.js, Node.js, Express', usedAt: 'Starplast, Tela Creatrix, Steelmonks' },
+  { area: 'Automation and AI/OCR', tools: 'Playwright, Claude, PDF extraction', usedAt: 'Starplast, Tela Creatrix' },
+  { area: 'Databases and servers', tools: 'PostgreSQL, Prisma, Docker, Nginx', usedAt: 'Starplast, Tela Creatrix, Steelmonks' },
+  { area: 'E-commerce and growth', tools: 'Shopify Liquid, GTM, GA4, A/B tests, email campaigns', usedAt: 'Tela Creatrix, Steelmonks' },
+  { area: 'Data and people', tools: 'KPI analysis, procedures, coaching, public speaking', usedAt: 'Starplast, TELUS, Toastmasters' },
+];
+
+export const interests ='Artificial intelligence and AI safety, automation, software architecture, SaaS. Away from the screen: chess, climbing, ping pong, hiking.';

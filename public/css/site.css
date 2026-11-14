@@ -156,6 +156,77 @@ h3 { font: 700 1.25rem/1.25 var(--sans); }
 .contact-links span { display: block; font-weight: 400; font-size: 0.875rem; }
 .contact :focus-visible { outline-color: var(--ink); }
 
+/* at a glance: four figures, then three charts in plain HTML */
+.glance h3 { margin: clamp(48px, 7vw, 80px) 0 20px; font: 500 clamp(1.5rem, 2.6vw, 2rem)/1.15 var(--serif); font-variation-settings: 'opsz' 18; }
+.numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0 clamp(20px, 3vw, 40px); }
+.numbers li { padding: 18px 0 8px; border-top: 3px solid var(--ink); }
+.numbers li:nth-child(odd) { border-top-color: var(--flame); }
+.numbers-figure { font: 900 clamp(2.75rem, 5.4vw, 4rem)/1 var(--sans); font-stretch: 125%; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+.numbers-label { margin-top: 6px; font-weight: 700; }
+.numbers-detail { margin-top: 4px; color: var(--soft); font-size: 0.9375rem; max-width: 22em; }
+
+.years { --label: 16rem; --grid: repeating-linear-gradient(90deg, var(--rule) 0 1px, transparent 1px calc(100% / var(--cols))); }
+.years-key, .years-rows > li, .years-axis { display: grid; grid-template-columns: var(--label) 1fr; gap: 4px clamp(16px, 3vw, 32px); }
+.years-key { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-bottom: 14px; font-size: 0.875rem; color: var(--soft); }
+.years-key li { display: flex; align-items: center; gap: 8px; }
+.years-key li::before { content: ''; width: 18px; height: 10px; background: var(--c); border: 1.5px solid var(--edge, var(--c)); }
+.years-rows > li { align-items: center; padding: 7px 0; border-top: 1px solid var(--rule); }
+.years-label { font-size: 0.9375rem; line-height: 1.3; }
+.years-label strong { display: block; }
+.years-label span { color: var(--soft); font-size: 0.875rem; }
+.years-track { position: relative; align-self: stretch; min-height: 22px; background: var(--grid); border-right: 1px solid var(--rule); }
+.years-track::after { content: ''; position: absolute; top: -8px; bottom: -8px; left: var(--now); border-left: 2px dotted var(--ink); opacity: 0.5; }
+.years-bar { position: absolute; top: 50%; height: 14px; translate: 0 -50%; left: var(--a); width: calc(var(--b) - var(--a)); min-width: 4px;
+  background: var(--c); border: 1.5px solid var(--edge, var(--c)); border-radius: 1px; }
+.years-bar.open { border-right-width: 0; background: linear-gradient(90deg, var(--c) 70%, transparent); }
+.years-axis { margin-top: 2px; font-size: 0.8125rem; color: var(--soft); font-variant-numeric: tabular-nums; }
+.years-ticks { display: grid; grid-template-columns: repeat(var(--cols), 1fr); }
+.years-ticks span { padding-left: 4px; }
+.k-work { --c: var(--blazer); }
+.k-own { --c: var(--flame); }
+.k-study { --c: var(--paper); --edge: var(--blazer); }
+.k-lead { --c: var(--ink); }
+
+.skillmap { width: 100%; border-collapse: collapse; }
+.skillmap th, .skillmap td { padding: 12px 8px; border-top: 1px solid var(--rule); text-align: center; vertical-align: middle; }
+.skillmap thead th { border-top: 0; padding-bottom: 10px; font-size: 0.875rem; font-weight: 700; vertical-align: bottom; }
+.skillmap tbody th { text-align: left; padding-left: 0; font-weight: 400; width: 46%; }
+.skillmap tbody th strong { display: block; }
+.skillmap tbody th span { color: var(--soft); font-size: 0.875rem; }
+.skillmap td.yes span[aria-hidden] { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: var(--blazer); }
+.skillmap tbody tr:hover td.yes span[aria-hidden] { background: var(--flame); }
+.skillmap td.no { background: linear-gradient(var(--rule), var(--rule)) center / 10px 1px no-repeat; }
+
+.langs { --name: 7rem; max-width: 46rem; }
+.langs li, .langs-scale { display: grid; grid-template-columns: var(--name) 1fr 3.5rem; gap: 12px; align-items: center; }
+.langs li { padding: 6px 0; }
+.langs-name { font-weight: 700; }
+.langs-track { height: 16px; background: repeating-linear-gradient(90deg, var(--rule) 0 1px, transparent 1px calc(100% / 7)); border-right: 1px solid var(--rule); }
+.langs-bar { display: block; height: 100%; width: var(--w); background: var(--blazer); }
+.langs .native .langs-bar { background: var(--flame); }
+.langs-level { font-size: 0.875rem; color: var(--soft); font-variant-numeric: tabular-nums; }
+.langs-scale { margin-top: 4px; font-size: 0.75rem; color: var(--soft); }
+.langs-ticks { display: grid; grid-template-columns: repeat(7, 1fr); }
+.langs-ticks span, .years-ticks span { text-align: center; padding: 0 !important; }
+
+@media (max-width: 760px) {
+  .years-rows > li { grid-template-columns: 1fr; padding: 10px 0; }
+  .years-key, .years-axis { grid-template-columns: 1fr; }
+  .years-axis > span:first-child { display: none; }
+  .years-ticks span { font-size: 0.6875rem; padding-left: 2px; }
+  .skillmap thead { display: none; }
+  .skillmap, .skillmap tbody, .skillmap tr, .skillmap th { display: block; width: auto; }
+  .skillmap tr { padding: 12px 0; border-top: 1px solid var(--rule); }
+  .skillmap tbody th { padding: 0 0 6px; border: 0; }
+  .skillmap td { display: none; }
+  .skillmap td.yes { display: inline-block; padding: 2px 10px; margin: 4px 6px 0 0; border: 0; border-radius: 99px; background: var(--blazer); color: var(--tee); font-size: 0.8125rem; font-weight: 500; }
+  .skillmap td.yes::before { content: attr(data-at); }
+  .skillmap td.yes span[aria-hidden] { display: none; }
+  .langs { --name: 5.5rem; }
+  .langs li, .langs-scale { grid-template-columns: var(--name) 1fr 2.75rem; gap: 8px; }
+  .langs-ticks span { font-size: 0.625rem; padding-left: 1px; }
+}
+
 @media (max-width: 760px) {
   .timeline > li, .posts > li, .rows > div { grid-template-columns: 1fr; }
   .posts time { padding-top: 0; }

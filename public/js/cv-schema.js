@@ -25,4 +25,12 @@ export const CV_SCHEMA = [
   { key: 'languages', label: 'Languages', type: 'list', item: 'name', fields: [t('name', 'Language'), t('level', 'Level')] },
   { key: 'awards', label: 'Activities and awards', type: 'list', item: 'what', fields: [t('what', 'Title'), long('detail', 'Detail')] },
   { key: 'interests', label: 'Interests', type: 'long' },
+  { key: 'numbers', label: 'At a glance: numbers', type: 'list', item: 'figure', fields: [t('figure', 'Figure', { hint: 'e.g. 895 or 100+' }), t('label', 'Of what'), long('detail', 'Detail')] },
+  { key: 'timeline', label: 'At a glance: years', type: 'list', item: 'label', fields: [
+    t('label', 'Name'), t('what', 'Small line'), t('kind', 'Kind', { hint: 'work, own, study or lead' }),
+    t('from', 'From', { hint: 'YYYY-MM' }), t('to', 'To', { hint: 'YYYY-MM. Empty means still going.' }),
+  ] },
+  { key: 'skillMap', label: 'At a glance: skills', type: 'list', item: 'area', fields: [
+    t('area', 'Area'), long('tools', 'Tools'), t('usedAt', 'Used at', { hint: 'Comma-separated. Each name becomes a column.' }),
+  ] },
 ];
