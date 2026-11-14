@@ -1,0 +1,16 @@
+.git
+.claude
+.env
+node_modules
+data
+avatar
+reference
+deploy
+preview.html
+preview.bat
+README.md
+*.log
+# only the two figurines used on the site go into the image
+public/models/*
+!public/models/marius-hero.glb
+!public/models/toma-hero.glb

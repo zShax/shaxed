@@ -1,0 +1,18 @@
+services:
+  site:
+    build: .
+    image: shaxed-site
+    container_name: shaxed-site
+    restart: unless-stopped
+    env_file: .env                  # ADMIN_PASSWORD, SESSION_SECRET, SITE_URL (see .env.example)
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATA_DIR: /app/data
+    ports:
+      - "127.0.0.1:3000:3000"       # local only: nginx on the host proxies to it
+    volumes:
+      - blogdata:/app/data          # blog.db survives rebuilds
+
+volumes:
+  blogdata:

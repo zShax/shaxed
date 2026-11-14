@@ -1,11 +1,19 @@
 """
-Stylized 3D figurine of Marius -> public/models/marius-hero.glb
+Marius - stylized 3D collectible figurine  ->  public/models/marius-hero.glb
+
+Same person as Toma (avatar/build_toma.py), so the two share one figure: the head / face, the hands, the proportions, the
+A-pose and the body scale are the same code. Keep those parts in sync when either file changes. Only the look differs:
+curly dark hair, round thin-rimmed glasses, a small goatee, navy blazer over a white shirt, tartan bow tie, dark trousers,
+tan suede shoes, a silver ring on the left hand.
+
+Everything is built from smooth lofted surfaces (no cloth normal maps, no hard-edged patches).
+Mesh names in the GLB: Head (skin, face; parent of Hair, Glasses, Goatee), Body, Blazer, Shirt, BowTie, Trousers, Shoes.
 
 Run:   blender -b -P avatar/build_avatar.py
-Opts:  blender -b -P avatar/build_avatar.py -- [--no-render] [--tag it1] [--samples 48]
+Opts:  blender -b -P avatar/build_avatar.py -- [--no-render] [--tag it1] [--samples 48] [--shots front,back]
 
-Coordinates while modelling: Blender, metres, Z up, figure faces -Y (the glTF exporter
-converts this to Y-up / facing +Z).  The person's LEFT side is +X.
+Coordinates while modelling: Blender, metres, Z up, figure faces -Y (the glTF exporter converts this to Y-up / facing +Z).
+The figure's LEFT side is +X.
 """
 import bpy, bmesh, math, os, sys, random, struct, json
 import numpy as np
@@ -25,31 +33,34 @@ try:
 except NameError:
     HERE = os.path.abspath('avatar')
 ROOT = os.path.dirname(HERE)
-OUT_GLB = os.path.join(ROOT, 'public', 'models', 'marius-hero.glb')
-RENDER_DIR = os.path.join(HERE, 'renders')
-TAG = arg('--tag', 'build')
+OUT_GLB = arg('--out') or os.path.join(ROOT, 'public', 'models', 'marius-hero.glb')
+RENDER_DIR = arg('--render-dir') or os.path.join(HERE, 'renders')
+TAG = arg('--tag', 'marius')
 SAMPLES = int(arg('--samples', 40))
 DO_RENDER = not arg('--no-render', False)
+SHOTS = arg('--shots')                    # e.g. --shots back,shoes : render only these previews (no contact sheet)
 
-TARGET_HEIGHT = 1.66
-WEAVE_TILE = 0.16
-CHIN_RAISE_DEG = 3.5
+BODY_SCALE = 1.0036                      # the scale Toma's build ends up with (1.70 m incl. his bun): same person, same size
+CHIN_RAISE_DEG = 2.0
+HEAD_SCALE = 1.12
 
-# palette
-C_SKIN = '#DDAE8E'
-C_LIP = '#B9706A'
-C_HAIR = '#1D1411'
-C_NAVY = '#1E2741'
-C_TROUSER = '#141827'
+# palette (hex, sRGB)
+C_SKIN = '#C99A78'                         # skin, lips and hair are Toma's: same person
+C_LIP = '#A5605A'
+C_HAIR = '#1A1410'
+C_GOATEE = '#2C2019'
+C_NAVY = '#243257'
+C_TROUSER = '#161B2C'
 C_SHIRT = '#F3F3F1'
 C_BUTTON = '#3B4558'
-C_STITCH = '#8D9DB8'
 C_ACCENT = '#8DB8E8'
-C_SUEDE = '#6E5A47'
+C_SUEDE = '#75604B'
 C_LACE = '#24150F'
-C_SOLE = '#A67C54'
+C_SOLE = '#B08A62'
+C_SOCK = '#141824'
 C_GUN = '#2D3035'
 C_SILVER = '#CDCED1'
+
 
 # ----------------------------------------------------------------------------- math helpers
 def lerp(a, b, t): return a + (b - a) * t
@@ -393,98 +404,181 @@ def make_mat(name, base='#FFFFFF', rough=0.6, metal=0.0, vcol=False, tex=None, n
         except Exception: pass
     return m
 
+
 # ----------------------------------------------------------------------------- scene reset + materials
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.context.scene.unit_settings.system = 'METRIC'
 bpy.context.scene.unit_settings.scale_length = 1.0
 
-weave_base, weave_nrm = weave_textures()
-IMG_WEAVE = make_image('weave_base', weave_base)
-IMG_WEAVE_N = make_image('weave_normal', weave_nrm, nonColor=True)
 IMG_TARTAN = make_image('tartan_base', tartan_texture())
 
 MAT = {
-    'skin': make_mat('Skin', vcol=True, rough=0.52, spec=0.45),
-    'hair': make_mat('Hair', base=C_HAIR, rough=0.5, spec=0.45),
-    'cotton': make_mat('Cotton', vcol=True, tex=IMG_WEAVE, nrm=IMG_WEAVE_N, rough=0.92, spec=0.3),
-    'shirt': make_mat('Shirt', base=C_SHIRT, rough=0.62, spec=0.35),
+    'skin': make_mat('Skin', vcol=True, rough=0.55, spec=0.4),
+    'hair': make_mat('Hair', vcol=True, rough=0.42, spec=0.5),
+    'detail': make_mat('Detail', vcol=True, rough=0.55, spec=0.4),
+    'cloth': make_mat('Cloth', vcol=True, rough=0.86, spec=0.22),
     'tartan': make_mat('Tartan', tex=IMG_TARTAN, rough=0.7, spec=0.35),
-    'detail': make_mat('Detail', vcol=True, rough=0.75, spec=0.35),
     'metal': make_mat('Metal', vcol=True, rough=0.32, metal=1.0),
     'lens': make_mat('Lens', base='#EAF2FF', rough=0.03, alpha=0.07, spec=0.6),
 }
+MAT['cloth'].use_backface_culling = False          # exported as doubleSided (open cuffs / hems)
 
-# ============================================================================= BODY PROPORTIONS
-# Torso knot tables, rows: z, xc, yc, rx, ry   (blazer outer surface)
+# ----------------------------------------------------------------------------- generic loft with correct winding + per-face UVs
+def loft(mb, rings, uvfn=None, mat=0, closed=True, flip=None, centers=None):
+    """Quad loft between rings. uvfn(corners) -> list of 4 (u,v); corners = [(vert, ring_i, j_float)] in face order.
+    Winding is chosen so normals point away from the loft axis (flip=None -> automatic)."""
+    S = len(rings[0]); R = len(rings); nj = S if closed else S - 1
+    cen = [sum((v.co for v in r), Vector()) / len(r) for r in rings]
+    ax = cen[-1] - cen[0]
+    ax = ax.normalized() if ax.length > 1e-6 else Vector((0, 0, 1))
+    quads = []; score = 0.0
+    for i in range(R - 1):
+        c = (cen[i] + cen[i + 1]) * 0.5
+        for j in range(nj):
+            j2 = (j + 1) % S
+            corners = [(rings[i][j], i, j), (rings[i][j2], i, j + 1), (rings[i + 1][j2], i + 1, j + 1), (rings[i + 1][j], i + 1, j)]
+            q = [cc[0] for cc in corners]
+            n = (q[1].co - q[0].co).cross(q[3].co - q[0].co)
+            fc = sum((v.co for v in q), Vector()) / 4
+            if centers is not None:
+                out = fc - (centers[i] + centers[min(i + 1, len(centers) - 1)]) * 0.5
+            else:
+                out = fc - c; out = out - ax * out.dot(ax)
+            score += n.dot(out)
+            quads.append(corners)
+    fl = (score < 0) if flip is None else flip
+    for corners in quads:
+        uvs = uvfn(corners) if uvfn else None
+        if fl:
+            corners = corners[::-1]
+            if uvs: uvs = uvs[::-1]
+        mb.face([cc[0] for cc in corners], uvs, mat)
+
+def fan_cap(mb, ring, outward, mat=0, uv=(0.5, 0.5), color=(1, 1, 1, 1)):
+    cen = sum((v.co for v in ring), Vector()) / len(ring)
+    cv = mb.vert_raw(cen, color)
+    n = len(ring)
+    for j in range(n):
+        a, b = ring[j], ring[(j + 1) % n]
+        nrm = (a.co - cen).cross(b.co - cen)
+        vs = (cv, a, b) if nrm.dot(outward) > 0 else (cv, b, a)
+        mb.face(vs, [uv, uv, uv], mat)
+
+def plain_uv(u, v):
+    return lambda corners: [(u, v)] * 4
+
+def sgnp(c, p):
+    return math.copysign(abs(c) ** (2.0 / p), c)
+
+def sweep(mb, path, ra, rb=None, sides=12, color=(1, 1, 1, 1), hint=(0, -1, 0), cap0=False, cap1=False, mat=0):
+    """Tube along `path` (elliptical section ra x rb, numbers / lists / callables like tube()), built with loft() so the
+    faces always point outwards. Returns the rings."""
+    path = [Vector(p) for p in path]
+    n = len(path)
+    fa = prof(ra); fb = prof(rb if rb is not None else ra)
+    T = []
+    for i in range(n):
+        t = path[1] - path[0] if i == 0 else path[-1] - path[-2] if i == n - 1 else path[i + 1] - path[i - 1]
+        T.append(t.normalized())
+    h = Vector(hint)
+    N = h - T[0] * h.dot(T[0])
+    if N.length < 1e-4: N = Vector((1, 0, 0)) - T[0] * T[0].x
+    N.normalize()
+    rings = []
+    for i in range(n):
+        if i > 0:
+            N = T[i - 1].rotation_difference(T[i]) @ N
+            N = (N - T[i] * N.dot(T[i])).normalized()
+        B = T[i].cross(N)
+        t = i / (n - 1); a = max(fa(t), 1e-4); b = max(fb(t), 1e-4)
+        rings.append([mb.vert(path[i] + N * (a * math.cos(2 * math.pi * j / sides)) + B * (b * math.sin(2 * math.pi * j / sides)), color)
+                      for j in range(sides)])
+    cens = [(mb.M @ p) if mb.M is not None else p for p in path]
+    loft(mb, rings, mat=mat, closed=True, centers=cens)
+    if cap0: fan_cap(mb, rings[0], cens[0] - cens[1], mat, color=color)
+    if cap1: fan_cap(mb, rings[-1], cens[-1] - cens[-2], mat, color=color)
+    return rings
+
+def stud(mb, base, nrm, r, h, color, sides=14, mat=0):
+    """small flat cylinder standing on a surface (buttons)"""
+    ax = Vector(nrm).normalized()
+    sweep(mb, [Vector(base) - ax * 0.001, Vector(base) + ax * h], r, r, sides=sides, color=color, hint=(0, 0, 1), cap0=True, cap1=True, mat=mat)
+
+# ============================================================================= BODY PROPORTIONS (the skeleton is Toma's)
+# blazer torso:  z, xc, yc, rx, ry, p (superellipse power: 2 = ellipse, >2 boxier)
 BLAZER_K = KnotProfile([
-    (0.795, -0.012, 0.000, 0.164, 0.116),
-    (0.86, -0.012, 0.000, 0.171, 0.120),
-    (0.95, -0.009, 0.001, 0.162, 0.114),
-    (1.02, -0.007, 0.002, 0.153, 0.108),
-    (1.10, -0.004, 0.003, 0.159, 0.110),
-    (1.20, -0.001, 0.004, 0.171, 0.113),
-    (1.28, 0.000, 0.005, 0.184, 0.107),
-    (1.31, 0.000, 0.006, 0.172, 0.100),
-    (1.34, 0.000, 0.008, 0.146, 0.088),
-    (1.365, 0.000, 0.010, 0.113, 0.076),
-    (1.390, 0.000, 0.012, 0.076, 0.066),
-    (1.405, 0.000, 0.012, 0.071, 0.064),
+    (0.790, 0.0, 0.002, 0.172, 0.126, 2.6),
+    (0.860, 0.0, 0.002, 0.174, 0.127, 2.6),
+    (0.950, 0.0, 0.003, 0.169, 0.123, 2.5),
+    (1.040, 0.0, 0.004, 0.166, 0.120, 2.4),
+    (1.120, 0.0, 0.004, 0.172, 0.121, 2.4),
+    (1.200, 0.0, 0.005, 0.181, 0.120, 2.4),
+    (1.270, 0.0, 0.006, 0.190, 0.114, 2.4),
+    (1.305, 0.0, 0.007, 0.190, 0.105, 2.3),
+    (1.335, 0.0, 0.008, 0.166, 0.093, 2.2),
+    (1.358, 0.0, 0.010, 0.120, 0.080, 2.1),
+    (1.380, 0.0, 0.012, 0.084, 0.069, 2.0),
+    (1.395, 0.0, 0.013, 0.074, 0.065, 2.0),
 ], smooth=6)
 
-def blazer_ring(z): return BLAZER_K(z)
-def shirt_ring(z):
-    xc, yc, rx, ry = BLAZER_K(z); return xc, yc, rx - 0.012, ry - 0.011
-def body_ring(z):
-    xc, yc, rx, ry = BLAZER_K(z); return xc, yc, rx - 0.024, ry - 0.021
+NECK_Z = 1.395
+HEM_Z = 0.790
+V_Z0 = 1.035                       # bottom of the V opening = the top button
+BUTTON_Z = (1.030, 0.948)
+CUT_Z = 0.935                      # below this the fronts curve away from each other (cutaway)
+SHIRT_IN = 0.010                   # the shirt sits this far inside the blazer
 
 def gorge_x(z):
-    """half-width of the V opening on the blazer at height z (0 = closed)."""
-    if z >= 1.04:
-        if z <= 1.34: return 0.003 + (z - 1.04) / 0.30 * 0.052
-        return lerp(0.055, 0.053, clamp((z - 1.34) / 0.065, 0, 1))
-    if z >= 0.95: return 0.0
-    return 0.0
+    """half-width of the blazer's V opening at height z (0 = closed)"""
+    if z <= V_Z0: return 0.0
+    if z <= 1.33: return 0.002 + (z - V_Z0) / (1.33 - V_Z0) * 0.054
+    return lerp(0.056, 0.054, clamp((z - 1.33) / (NECK_Z - 1.33), 0, 1))
 
-def bl_surface(x, z, lift=0.0):
-    xc, yc, rx, ry = BLAZER_K(z)
-    t = clamp((x - xc) / rx, -0.995, 0.995)
-    y = yc - ry * math.sqrt(1 - t * t)
-    n = Vector(((x - xc) / rx ** 2, (y - yc) / ry ** 2, 0.0)).normalized()
-    return Vector((x, y, z)) + n * lift, n
+def hem_z(x, y):
+    """height of the blazer's lower edge: level all round, swept up towards the middle at the front"""
+    if y > 0: return HEM_Z
+    return HEM_Z + 0.105 * (1 - smoothstep(0.0, 0.090, abs(x))) ** 1.3
 
-def sh_surface(x, z, lift=0.0):
-    xc, yc, rx, ry = shirt_ring(min(z, 1.405))
-    t = clamp((x - xc) / rx, -0.995, 0.995)
-    y = yc - ry * math.sqrt(1 - t * t)
-    n = Vector(((x - xc) / rx ** 2, (y - yc) / ry ** 2, 0.0)).normalized()
-    return Vector((x, y, z)) + n * lift, n
+def _front(x, z, lift, inset):
+    def yy(xq, zq):
+        xc, yc, rx, ry, p = BLAZER_K(zq)
+        t = clamp((xq - xc) / (rx - inset), -0.995, 0.995)
+        return yc - (ry - inset) * (1 - abs(t) ** p) ** (1.0 / p)
+    h = 0.002
+    fx = (yy(x + h, z) - yy(x - h, z)) / (2 * h)
+    fz = (yy(x, z + h) - yy(x, z - h)) / (2 * h)
+    n = Vector((fx, -1.0, fz)).normalized()
+    return Vector((x, yy(x, z), z)) + n * lift, n
 
-# pose: weight on the figure's right leg (-X); left leg relaxed
-SH = 0.006                         # shoulder tilt (left shoulder higher)
+def blazer_front(x, z, lift=0.0):
+    """point on the blazer's front surface + its normal"""
+    return _front(x, z, lift, 0.0)
+
+def shirt_front(x, z, lift=0.0):
+    return _front(x, z, lift, SHIRT_IN)
+
+# A-pose, symmetrical.  Figure's left = +X.   S1 shoulder joint, E elbow, W wrist
 ARM = {
-    +1: dict(S0=(0.156, 0.002, 1.298 + SH), S1=(0.176, 0.0, 1.256 + SH), E=(0.194, -0.014, 1.010 + SH * 0.5),
-             W=(0.202, -0.098, 0.795)),
-    -1: dict(S0=(-0.156, 0.002, 1.298 - SH), S1=(-0.176, 0.0, 1.256 - SH), E=(-0.193, -0.010, 1.012 - SH * 0.5),
-             W=(-0.200, -0.078, 0.797)),
+    +1: dict(S1=(0.178, 0.004, 1.272), E=(0.268, -0.006, 0.996), W=(0.322, -0.046, 0.790)),
+    -1: dict(S1=(-0.178, 0.004, 1.272), E=(-0.268, -0.006, 0.996), W=(-0.322, -0.046, 0.790)),
 }
-LEG = {
-    +1: dict(H=(0.086, 0.002, 0.88), K=(0.091, -0.030, 0.47), A=(0.094, -0.046, 0.075), yaw=+0.15),
-    -1: dict(H=(-0.092, 0.002, 0.89), K=(-0.092, -0.008, 0.47), A=(-0.094, -0.004, 0.075), yaw=-0.08),
-}
+def leg_pts(s):
+    return [(s * 0.088, 0.000, 0.905), (s * 0.091, -0.006, 0.470), (s * 0.094, 0.000, 0.075)]
+LEG_YAW = {+1: 0.07, -1: -0.07}        # toes out a touch (symmetrical)
 
-parts = {}   # name -> object
+parts = {}
 
-# ============================================================================= HEAD
-C = Vector((0.0, -0.004, 1.545))
+# ============================================================================= HEAD (Toma's face: same person) + goatee
+C = Vector((0.0, -0.004, 1.533))
 HRX, HRY, HRZ = 0.0785, 0.1000, 0.1130
 
 def nose_disp(Z, X):
     zs = [-0.060, -0.052, -0.046, -0.038, -0.028, -0.014, 0.000, 0.016, 0.030]
-    A = [0.0, 0.0105, 0.0225, 0.0255, 0.0220, 0.0150, 0.0092, 0.0045, 0.0]
+    A = [0.0, 0.0085, 0.0180, 0.0205, 0.0178, 0.0120, 0.0075, 0.0038, 0.0]
     W = [0.0070, 0.0100, 0.0112, 0.0100, 0.0080, 0.0064, 0.0052, 0.0048, 0.005]
     a = float(np.interp(Z, zs, A)); w = float(np.interp(Z, zs, W))
     d = a * math.exp(-0.5 * (X / w) ** 2)
-    d += 0.0095 * gauss(Z + 0.043, 0.0058) * gauss(X - 0.0138, 0.0055)       # alar wings
+    d += 0.0072 * gauss(Z + 0.043, 0.0058) * gauss(X - 0.0130, 0.0055)       # alar wings
     d -= 0.0045 * gauss(Z + 0.053, 0.0030) * gauss(X - 0.0085, 0.0035)       # nostril underside
     return d
 
@@ -507,7 +601,7 @@ def head_point(d):
     disp -= 0.0040 * gauss(Z + 0.060, 0.020) * gauss(X - 0.046, 0.014)                       # cheek hollow
     disp += 0.0048 * gauss(Z + 0.0705, 0.0052) * gauss(X, 0.0175)                            # upper lip
     disp += 0.0060 * gauss(Z + 0.0870, 0.0060) * gauss(X, 0.0165)                            # lower lip
-    grove = -0.0785 + 0.0040 * (X / 0.025) ** 2
+    grove = -0.0785 + 0.0014 * (X / 0.025) ** 2
     disp -= 0.0034 * gauss(Z - grove, 0.0017) * smoothstep(0.029, 0.021, X)                  # mouth line (smile)
     disp -= 0.0030 * gauss(Z + 0.0990, 0.0045) * gauss(X, 0.0155)                            # mentolabial
     disp += 0.0050 * gauss(Z + 0.1085, 0.0105) * gauss(X, 0.0165)                            # chin
@@ -524,15 +618,18 @@ def head_color(pw, d):
     front = smoothstep(0.05, 0.6, -d.y)
     c = SKIN_LIN
     # cheek flush + eye-socket warmth
-    c = mixc(c, hexlin('#E5A793'), 0.20 * gauss(X - 0.042, 0.016) * gauss(Z + 0.040, 0.016) * front)
-    c = mixc(c, hexlin('#C9977F'), 0.22 * gauss(X - 0.0335, 0.016) * gauss(Z - 0.002, 0.012) * front)
+    c = mixc(c, hexlin('#D18F70'), 0.20 * gauss(X - 0.042, 0.016) * gauss(Z + 0.040, 0.016) * front)
+    c = mixc(c, hexlin('#A87454'), 0.22 * gauss(X - 0.0335, 0.016) * gauss(Z - 0.002, 0.012) * front)
     # faint moustache shadow
     mm = smoothstep(0.030, 0.018, X) * smoothstep(-0.049, -0.056, Z) * smoothstep(-0.074, -0.066, Z)
-    c = mixc(c, hexlin('#9A7C70'), 0.30 * mm * front)
+    c = mixc(c, hexlin('#9A7C70'), 0.26 * mm * front)
+    # clean-shaven: only a very faint jaw / chin shadow
+    jw = smoothstep(-0.050, -0.090, Z) * (0.55 + 0.45 * smoothstep(0.0, 0.05, X)) * smoothstep(-0.3, 0.3, -d.y)
+    c = mixc(c, hexlin('#7A5A48'), 0.15 * jw)
     # lips
     lm = 1 - clamp(math.sqrt((X / 0.0255) ** 2 + ((Z + 0.0795) / 0.0165) ** 2), 0, 1)
-    c = mixc(c, hexlin(C_LIP), 0.9 * smoothstep(0.0, 0.35, lm) * front)
-    gm = gauss(Z - (-0.0785 + 0.0040 * (X / 0.025) ** 2), 0.0016) * smoothstep(0.029, 0.021, X)
+    c = mixc(c, hexlin(C_LIP), 0.8 * smoothstep(0.0, 0.35, lm) * front)
+    gm = gauss(Z - (-0.0785 + 0.0014 * (X / 0.025) ** 2), 0.0016) * smoothstep(0.029, 0.021, X)
     c = mixc(c, hexlin('#8B534D'), 0.8 * gm * front)
     # nostrils
     c = mixc(c, hexlin('#5E3B33'), 0.85 * gauss(Z + 0.0525, 0.0030) * gauss(X - 0.0090, 0.0036) * front)
@@ -563,7 +660,7 @@ def build_head():
         return (loc, nrm) if loc is not None else None
 
     # ---- eyes ------------------------------------------------------------------------
-    EYE_R = 0.0132
+    EYE_R = 0.0148
     ang = [0, 14, 27, 33, 40, 60, 85, 115, 145, 165, 180]
     cols = {0: '#080504', 14: '#1B100B', 27: '#3A2216', 33: '#150C08', 40: '#E9E3DC'}
     def eye_col(a, d):
@@ -577,9 +674,9 @@ def build_head():
     skin_c = col(C_SKIN)
     for s in (+1, -1):
         E = Vector((s * 0.0335, C.y - 0.0805, C.z + 0.0))
-        uv_sphere(mb, E, EYE_R, mat=1, angles=ang, segs=16, colfn=eye_col)
+        uv_sphere(mb, E, EYE_R, mat=1, angles=ang, segs=16, colfn=eye_col, axis=(0, -1, -0.14))     # gaze slightly downward
         uv_sphere(mb, E, EYE_R * 1.075, mat=0, segs=16, colfn=lambda a, d: skin_c,
-                  keep=lambda dv: dv.z > 0.44 and dv.y < 0.25)                 # upper lid
+                  keep=lambda dv: dv.z > 0.30 and dv.y < 0.25)                 # upper lid (relaxed, half-lowered)
         uv_sphere(mb, E, EYE_R * 1.06, mat=0, segs=16, colfn=lambda a, d: skin_c,
                   keep=lambda dv: dv.z < -0.74 and dv.y < 0.25)                # lower lid
     # ---- ears ------------------------------------------------------------------------
@@ -599,7 +696,7 @@ def build_head():
             d = Vector((x * math.sqrt(max(0, 1 - y * y / 2 - z * z / 2 + y * y * z * z / 3)),
                         y * math.sqrt(max(0, 1 - z * z / 2 - x * x / 2 + z * z * x * x / 3)),
                         z * math.sqrt(max(0, 1 - x * x / 2 - y * y / 2 + x * x * y * y / 3))))
-            vm[v.index] = mb.vert(epos(d), col('#DCAA91'))
+            vm[v.index] = mb.vert(epos(d), col('#BA8866'))
         for f in g2.faces: mb.face([vm[v.index] for v in f.verts], None, 0)
         g2.free()
     # ---- eyebrows (dark strips lying on the skin) --------------------------------------
@@ -609,8 +706,8 @@ def build_head():
         for i in range(nu):
             t = i / (nu - 1)
             xc_ = lerp(0.013, 0.055, t)
-            zc = 0.0246 + 0.0078 * math.sin(math.pi * t ** 0.85) - 0.0016 * t
-            hh = (0.0031 * (1 - 0.5 * t ** 1.5) + 0.0008)
+            zc = 0.0236 + 0.0024 * math.sin(math.pi * t ** 0.9) + 0.0004 * t
+            hh = (0.0040 * (1 - 0.28 * t ** 1.5) + 0.0008)
             row = []
             for j in range(nvv):
                 v = j / (nvv - 1) * 2 - 1
@@ -624,15 +721,14 @@ def build_head():
     nu = 18; grid = []
     for i in range(nu):
         t = i / (nu - 1); xx = lerp(-0.0245, 0.0245, t)
-        zc = -0.0785 + 0.0042 * (xx / 0.0245) ** 2 - 0.0004
+        zc = -0.0785 + 0.0012 * (xx / 0.0245) ** 2 - 0.0004
         row = []
         for sj in (-1, 0, 1):
             h_ = hit(xx, zc + sj * 0.0012 * (1 - 0.6 * abs(xx) / 0.0245))
             row.append((h_[0] + h_[1] * (0.00015 if sj == 0 else -0.0001), h_[1]) if h_ else None)
         grid.append(row)
     surf_patch(mb, grid, mat=1, color=col('#5F302D'))
-    parts['_goatee_hit'] = hit
-    # ---- goatee patch ------------------------------------------------------------------
+    # ---- goatee: a small soft patch on the chin (its own object, so it can be hidden) ---------------
     gm = MB()
     nu, nvv = 14, 11
     grid = []
@@ -647,13 +743,67 @@ def build_head():
             h_ = hit(v * hw, z_)
             row.append((h_[0] + h_[1] * lift, h_[1]) if h_ else None)
         grid.append(row)
-    surf_patch(gm, grid, mat=0, color=col('#3B2A21'))
+    surf_patch(gm, grid, mat=0, color=col(C_GOATEE))
     goatee = gm.build('Goatee', [MAT['hair']], recalc=False)
-    head = mb.build('Head', [MAT['skin'], MAT['detail'], MAT['hair'], MAT['lens']], recalc=False)
-    del parts['_goatee_hit']
+    head = mb.build('Head', [MAT['skin'], MAT['detail'], MAT['hair']], recalc=False)
     return head, goatee
 
-# ============================================================================= HAIR
+
+# ============================================================================= HANDS (Toma's)
+def hand_geometry(mb, side, M):
+    """Mitten-like, slightly curled hand. Local: wrist cuff plane at origin, fingers along -Z, palm faces medially."""
+    mb.M = M
+    m = -side                       # medial x direction
+    sk = col(C_SKIN)
+    # palm + back of hand
+    palm = [Vector((0, 0.0, 0.032)), Vector((0, 0.0, 0.0)), Vector((0.0, 0.0, -0.045)), Vector((0, 0.0, -0.092))]
+    tube(mb, catmull(palm, 4), [0.0185, 0.0250, 0.0410, 0.0400], [0.0170, 0.0175, 0.0165, 0.0135], sides=12,
+         mat=0, color=sk, hint=(0, -1, 0), cap0=True, cap1=True)
+    fy = [-0.0285, -0.0095, 0.0095, 0.0285]
+    flen = [0.074, 0.080, 0.072, 0.057]
+    frad = [0.0090, 0.0092, 0.0085, 0.0072]
+    ring_path = None
+    for k in range(4):
+        y = fy[k]; L = flen[k]
+        l1, l2, l3 = L * 0.45, L * 0.30, L * 0.25
+        a1, a2, a3 = math.radians(14 + 3 * k), math.radians(40 + 3 * k), math.radians(72 + 3 * k)
+        p0 = Vector((0, y, -0.088))
+        d1 = Vector((m * math.sin(a1), 0, -math.cos(a1)))
+        p1 = p0 + d1 * l1
+        d2 = Vector((m * math.sin(a2), 0, -math.cos(a2)))
+        p2 = p1 + d2 * l2
+        d3 = Vector((m * math.sin(a3), 0, -math.cos(a3)))
+        p3 = p2 + d3 * l3
+        pts = catmull([p0, p1, p2, p3], 3)
+        r = frad[k]
+        tube(mb, pts, [r, r * 0.97, r * 0.88, r * 0.62], [r * 0.95, r * 0.9, r * 0.82, r * 0.6], sides=8, mat=0, color=sk,
+             hint=(0, -1, 0), cap0=False, cap1=True)
+        if k == 2 and side > 0:
+            ring_path = (p0 + (p1 - p0) * 0.55, d1, r)
+    # thumb
+    t0 = Vector((m * 0.002, -0.036, -0.030))
+    thumb = [t0, Vector((m * 0.004, -0.050, -0.058)), Vector((m * 0.010, -0.052, -0.086)), Vector((m * 0.016, -0.048, -0.106))]
+    tube(mb, catmull(thumb, 3), [0.0112, 0.0100, 0.0088, 0.0066], [0.0105, 0.0095, 0.0085, 0.0064], sides=8, mat=0,
+         color=sk, hint=(0, -1, 0), cap0=True, cap1=True)
+    # brushed silver ring (left hand, ring finger)
+    if ring_path:
+        c0, dirv, r = ring_path
+        ax = dirv.normalized()
+        u = Vector((0, -1, 0)); u = (u - ax * u.dot(ax)).normalized(); v = ax.cross(u)
+        nmaj, nmin = 20, 6; rings = []
+        for kk in range(nmaj):
+            ph = 2 * math.pi * kk / nmaj
+            rad = u * math.cos(ph) + v * math.sin(ph)
+            cen = c0 + rad * (r * 0.97 + 0.0003)
+            ring = []
+            for j in range(nmin):
+                th = 2 * math.pi * j / nmin
+                ring.append(mb.vert(cen + rad * (0.0017 * math.cos(th)) + ax * (0.0032 * math.sin(th)), col(C_SILVER)))
+            rings.append(ring)
+        ring_loft(mb, rings, True, False, False, 1)
+    mb.M = None
+
+# ============================================================================= HAIR (dark curls: chunky clumps combed over the skull, longer at the back)
 def skull_pt(psi, theta, off=0.0):
     cx = math.sin(psi) * math.cos(theta); cy = -math.cos(psi) * math.cos(theta); cz = math.sin(theta)
     return C + Vector((cx * (HRX + off), cy * (HRY + off), cz * (HRZ + off)))
@@ -682,19 +832,26 @@ def grow(p0, d0, length, steps, rng, steer_fn=None, steer=0.12, hull=0.010, wave
         e = Vector((q.x / (HRX + hull), q.y / (HRY + hull), q.z / (HRZ + hull))); r = e.length
         if r < 1.0 and r > 1e-6:
             e = e / r; p = C + Vector((e.x * (HRX + hull), e.y * (HRY + hull), e.z * (HRZ + hull)))
-        if neck_avoid and p.z < 1.47:
+        if neck_avoid and p.z < 1.458:
             dx, dy = p.x - NECK_C.x, p.y - NECK_C.y; rr = math.hypot(dx, dy)
             lim = 0.088
-            if rr < lim and p.z < 1.47 and dy > -0.02:
+            if rr < lim and p.z < 1.458 and dy > -0.02:
                 k = lim / max(rr, 1e-5); p.x = NECK_C.x + dx * k; p.y = NECK_C.y + dy * k
         pts.append(p.copy())
     return pts
 
-def clump(mb, pts, r0, rng, sides=7, tip=0.55):
+HAIR_LIN = hexlin(C_HAIR)
+def clump(mb, pts, r0, rng, sides=8, tip=0.55):
+    """one lock of hair: a smooth tapered tube. The path is relaxed first so the lock flows instead of zig-zagging."""
+    pts = [Vector(p) for p in pts]
+    for _ in range(3):
+        pts = [pts[0]] + [pts[i - 1] * 0.25 + pts[i] * 0.5 + pts[i + 1] * 0.25 for i in range(1, len(pts) - 1)] + [pts[-1]]
     def rad(t):
-        base = r0 * (1.0 - (1 - tip) * t ** 1.2) * (1 + 0.08 * math.sin(t * 9 + r0 * 900))
+        base = r0 * (1.0 - (1 - tip) * t ** 1.2)
         return base * min(1.0, ((1 - t) / 0.14) ** 0.55 + 0.04) * (0.45 + 0.55 * smoothstep(0.0, 0.16, t))
-    tube(mb, pts, rad, rad, sides=sides, mat=0, color=col(C_HAIR), hint=(0, 0, 1), cap0=True, cap1=True)
+    tone = rng.uniform(0.85, 1.40)
+    cc = (HAIR_LIN[0] * tone, HAIR_LIN[1] * tone, HAIR_LIN[2] * tone, 1.0)
+    sweep(mb, pts, rad, rad, sides=sides, color=cc, hint=(0, 0, 1), cap0=True, cap1=True)
 
 def sp(psi, th, off=0.0):
     """point on the (offset) skull ellipsoid; theta may exceed 90 deg to continue over the crown to the back."""
@@ -733,20 +890,25 @@ def build_hair():
         a = abs(math.degrees(psi))
         return float(np.interp(a, [0, 40, 62, 80, 98, 118, 140, 180], [0.058, 0.055, 0.046, 0.022, 0.004, -0.030, -0.068, -0.075]))
     g = bmesh.new(); bmesh.ops.create_cube(g, size=2.0)
-    bmesh.ops.subdivide_edges(g, edges=g.edges[:], cuts=17, use_grid_fill=True); g.verts.index_update()
+    bmesh.ops.subdivide_edges(g, edges=g.edges[:], cuts=23, use_grid_fill=True); g.verts.index_update()
     vm = {}
     for v in g.verts:
         x, y, z = v.co
         d = Vector((x * math.sqrt(max(0, 1 - y * y / 2 - z * z / 2 + y * y * z * z / 3)),
                     y * math.sqrt(max(0, 1 - z * z / 2 - x * x / 2 + z * z * x * x / 3)),
                     z * math.sqrt(max(0, 1 - x * x / 2 - y * y / 2 + x * x * y * y / 3))))
-        off = 0.0060
+        psi = math.atan2(d.x, -d.y)
+        hl_ = hairline(psi)
+        if d.z * HRZ < hl_:                      # snap to the hairline -> a smooth edge instead of a saw-tooth brim
+            th = math.asin(clamp(hl_ / HRZ, -0.95, 0.95))
+            d = Vector((math.sin(psi) * math.cos(th), -math.cos(psi) * math.cos(th), math.sin(th)))
+        off = 0.0016 + 0.0044 * smoothstep(0.0, 0.022, d.z * HRZ - hl_)       # thin at the hairline
         vm[v.index] = (mb.vert(C + Vector((d.x * (HRX + off), d.y * (HRY + off), d.z * (HRZ + off))), col(C_HAIR)), d)
     for f in g.faces:
         vs = [vm[v.index][0] for v in f.verts]
         cen = sum((vm[v.index][1] for v in f.verts), Vector()) / 4
         psi = math.atan2(cen.x, -cen.y)
-        if cen.z * HRZ > hairline(psi) - 0.004: mb.face(vs, None, 0)
+        if cen.z * HRZ > hairline(psi) - 0.0012: mb.face(vs, None, 0)
     g.free()
     bmesh.ops.recalc_face_normals(mb.bm, faces=mb.bm.faces[:])
 
@@ -810,8 +972,8 @@ def build_hair():
         sgn = 1 if math.sin(psi0) > 0 else -1
         hf = lambda s: 0.011 + 0.008 * math.sin(math.pi * s)
         L = rng.uniform(0.060, 0.095) if th0 < d2r(44) else rng.uniform(0.040, 0.070)
-        tail = dict(length=L, steps=7, curl=rng.uniform(1.8, 2.8), hull=0.018, wave=0.10,
-                    steer=lambda p, t: DOWNBACK, steer_k=0.10, axis=Vector((rng.uniform(-0.7, 0.7), 1.0, rng.uniform(-0.2, 0.3))))
+        tail = dict(length=L, steps=7, curl=rng.uniform(1.0, 1.8), hull=0.018, wave=0.10,
+                    steer=lambda p, t: DOWNBACK, steer_k=0.10, axis=Vector((1.0, rng.uniform(-0.3, 0.3), 0.0)))
         comb(mb, rng, psi0, th0, th1, 0.0, hf, rng.uniform(0.0150, 0.0185), n=9, wave=0.05, tail=tail)
     return mb.build('Hair', [MAT['hair']], recalc=False)
 
@@ -862,293 +1024,197 @@ def build_glasses():
     tube(mb, catmull([b1, Vector((0, LY - 0.0065, LZ + 0.0078)), b0], 5), WR, WR, sides=6, mat=0, color=metal, hint=(0, 0, 1))
     return mb.build('Glasses', [MAT['metal'], MAT['lens']], recalc=False)
 
-# ============================================================================= BODY (skin)
-def hand_geometry(mb, side, M):
-    """Mitten-like, slightly curled hand. Local: wrist cuff plane at origin, fingers along -Z, palm faces medially."""
-    mb.M = M
-    m = -side                       # medial x direction
-    sk = col(C_SKIN)
-    # palm + back of hand
-    palm = [Vector((0, 0.0, 0.032)), Vector((0, 0.0, 0.0)), Vector((0.0, 0.0, -0.045)), Vector((0, 0.0, -0.092))]
-    tube(mb, catmull(palm, 4), [0.0300, 0.0300, 0.0420, 0.0405], [0.0140, 0.0150, 0.0165, 0.0135], sides=12,
-         mat=0, color=sk, hint=(0, -1, 0), cap0=True, cap1=True)
-    fy = [-0.0285, -0.0095, 0.0095, 0.0285]
-    flen = [0.074, 0.080, 0.072, 0.057]
-    frad = [0.0090, 0.0092, 0.0085, 0.0072]
-    ring_path = None
-    for k in range(4):
-        y = fy[k]; L = flen[k]
-        l1, l2, l3 = L * 0.45, L * 0.30, L * 0.25
-        a1, a2, a3 = math.radians(14 + 3 * k), math.radians(40 + 3 * k), math.radians(72 + 3 * k)
-        p0 = Vector((0, y, -0.088))
-        d1 = Vector((m * math.sin(a1), 0, -math.cos(a1)))
-        p1 = p0 + d1 * l1
-        d2 = Vector((m * math.sin(a2), 0, -math.cos(a2)))
-        p2 = p1 + d2 * l2
-        d3 = Vector((m * math.sin(a3), 0, -math.cos(a3)))
-        p3 = p2 + d3 * l3
-        pts = catmull([p0, p1, p2, p3], 3)
-        r = frad[k]
-        tube(mb, pts, [r, r * 0.97, r * 0.88, r * 0.62], [r * 0.95, r * 0.9, r * 0.82, r * 0.6], sides=8, mat=0, color=sk,
-             hint=(0, -1, 0), cap0=False, cap1=True)
-        if k == 2 and side > 0:
-            ring_path = (p0 + (p1 - p0) * 0.55, d1, r)
-    # thumb
-    t0 = Vector((m * 0.002, -0.036, -0.030))
-    thumb = [t0, Vector((m * 0.004, -0.050, -0.058)), Vector((m * 0.010, -0.052, -0.086)), Vector((m * 0.016, -0.048, -0.106))]
-    tube(mb, catmull(thumb, 3), [0.0112, 0.0100, 0.0088, 0.0066], [0.0105, 0.0095, 0.0085, 0.0064], sides=8, mat=0,
-         color=sk, hint=(0, -1, 0), cap0=True, cap1=True)
-    # brushed silver ring (left hand, ring finger)
-    if ring_path:
-        c0, dirv, r = ring_path
-        ax = dirv.normalized()
-        u = Vector((0, -1, 0)); u = (u - ax * u.dot(ax)).normalized(); v = ax.cross(u)
-        nmaj, nmin = 20, 6; rings = []
-        for kk in range(nmaj):
-            ph = 2 * math.pi * kk / nmaj
-            rad = u * math.cos(ph) + v * math.sin(ph)
-            cen = c0 + rad * (r * 0.97 + 0.0003)
-            ring = []
-            for j in range(nmin):
-                th = 2 * math.pi * j / nmin
-                ring.append(mb.vert(cen + rad * (0.0017 * math.cos(th)) + ax * (0.0032 * math.sin(th)), col(C_SILVER)))
-            rings.append(ring)
-        ring_loft(mb, rings, True, False, False, 1)
-    mb.M = None
-
+# ============================================================================= BODY (skin): neck, wrists, hands. The rest is under the clothes.
+HAND_SCALE = 0.95
 def build_body():
     mb = MB()
     sk = col(C_SKIN)
-    # inner torso (hidden by shirt)
-    rings = []
-    zs = np.linspace(0.90, 1.36, 8)
-    for z in zs:
-        xc, yc, rx, ry = body_ring(z)
-        ring = [mb.vert((xc - rx * math.sin(2 * math.pi * j / 20), yc + ry * math.cos(2 * math.pi * j / 20), z), sk) for j in range(20)]
-        rings.append(ring)
-    ring_loft(mb, rings, True, True, True, 0)
-    # neck
-    tube(mb, [(0, 0.014, 1.30), (0, 0.010, 1.38), (0, 0.003, 1.48)], [0.0545, 0.0520, 0.0500], [0.0520, 0.0500, 0.0490],
+    tube(mb, [(0, 0.014, 1.30), (0, 0.010, 1.38), (0, 0.003, 1.48)], [0.0580, 0.0560, 0.0545], [0.0560, 0.0540, 0.0535],
          sides=14, mat=0, color=sk, hint=(0, -1, 0))
-    # arms (inside sleeves) + hands
     for s in (+1, -1):
         a = ARM[s]
-        S1, E, W = Vector(a['S1']), Vector(a['E']), Vector(a['W'])
+        E, W = Vector(a['E']), Vector(a['W'])
         f = (W - E).normalized()
-        path = catmull([S1, E, W + f * 0.03], 4)
-        tube(mb, path, [0.040, 0.034, 0.028, 0.0265], [0.040, 0.034, 0.028, 0.0215], sides=10, mat=0, color=sk, hint=(0, -1, 0))
-        # hand frame: local -Z -> forearm direction
+        tube(mb, [E.lerp(W, 0.45), E.lerp(W, 0.75), W + f * 0.005], [0.0250, 0.0235, 0.0215], [0.0240, 0.0225, 0.0205],
+             sides=12, mat=0, color=sk, hint=(0, -1, 0))
         R = Vector((0, 0, -1)).rotation_difference(f).to_matrix().to_4x4()
-        M = Matrix.Translation(W) @ R
+        M = Matrix.Translation(W) @ R @ Matrix.Diagonal((HAND_SCALE, HAND_SCALE, HAND_SCALE, 1.0))
         hand_geometry(mb, s, M)
     return mb.build('Body', [MAT['skin'], MAT['metal']], recalc=True)
 
-# ============================================================================= BLAZER
+# ============================================================================= BLAZER (navy, single-breasted, two buttons, notch lapels)
 def sleeve_path(s):
-    a = ARM[s]
-    return catmull([a['S0'], a['S1'], a['E'], a['W']], 5)
+    a = ARM[s]; S1, E, W = Vector(a['S1']), Vector(a['E']), Vector(a['W'])
+    dr = (E - S1).normalized(); f = (W - E).normalized()
+    return catmull([S1 - dr * 0.045 + Vector((-s * 0.026, 0, -0.016)), S1 + dr * 0.020, E, W - f * 0.016], 6)
+SLEEVE_RA = prof([0.028, 0.0550, 0.0525, 0.0475, 0.0435, 0.0410])      # starts small, deep inside the shoulder
+SLEEVE_RB = prof([0.028, 0.0535, 0.0505, 0.0460, 0.0425, 0.0400])
 
 def build_blazer():
     mb = MB()
-    tile = WEAVE_TILE
     navy = col(C_NAVY)
-    # ---- torso shell (open at the V, cut-away below the buttons) -----------------------
-    zs = np.concatenate([np.linspace(0.795, 1.30, 17), np.linspace(1.315, 1.405, 9)])
-    M_ = 40
-    rings = []; phis = []
+    lapel = tuple(min(1.0, c * 1.10) for c in navy[:3]) + (1.0,)
+    # ---- body: one smooth shell, open in a V above the top button, fronts swept apart below the lower one ----------
+    S = 49
+    zs = np.concatenate([np.linspace(HEM_Z, 1.30, 18), np.linspace(1.312, NECK_Z, 8)])
+    rings = []
     for z in zs:
-        xc, yc, rx, ry = blazer_ring(z)
-        gx = gorge_x(z)
-        alpha = math.asin(clamp(gx / rx, 0, 0.999))
-        span = math.pi - alpha
-        ring = []; ph = []
-        for k in range(M_):
-            phi = -span + 2 * span * k / (M_ - 1)
-            ring.append(mb.vert((xc - rx * math.sin(phi), yc + ry * math.cos(phi), z), navy))
-            ph.append(phi)
-        rings.append(ring); phis.append(ph)
-    ring_loft(mb, rings, closed=False, mat=0, uvf=lambda i, j: (phis[i][min(j, M_ - 1)] * 0.14 / tile, zs[i] / tile))
-    # ---- sleeves ----------------------------------------------------------------------
+        xc, yc, rx, ry, p = BLAZER_K(z)
+        a0 = math.asin(clamp(gorge_x(z) / rx, 0.0, 0.999) ** (p / 2.0))       # half-angle of the opening
+        ring = []
+        for k in range(S):
+            phi = 1.5 * math.pi + a0 + (2 * math.pi - 2 * a0) * k / (S - 1)
+            x = xc + rx * sgnp(math.cos(phi), p); y = yc + ry * sgnp(math.sin(phi), p)
+            zz = z
+            if z < CUT_Z:
+                hz = hem_z(x, y - yc)
+                zz = hz + (z - HEM_Z) * (CUT_Z - hz) / (CUT_Z - HEM_Z)
+            ring.append(mb.vert((x, y, zz), navy))
+        rings.append(ring)
+    loft(mb, rings, mat=0, closed=False)
+
+    # ---- sleeves: shoulder to just above the wrist, following the arm -----------------------------------------------
     for s in (+1, -1):
-        path = sleeve_path(s)
-        tube(mb, path, [0.035, 0.049, 0.0475, 0.0450, 0.0420, 0.0405], [0.035, 0.048, 0.0465, 0.0440, 0.0410, 0.0390],
-             sides=14, mat=0, color=navy, hint=(0, -1, 0), cap0=True, cap1=False, uvtile=tile)
-    # ---- folds: a few large, well placed ------------------------------------------------
-    folds = [((0.02, -0.118, 1.01), (-0.075, -0.124, 0.88), 0.020, 0.0030),      # button -> weight-side hip
-             ((0.04, -0.12, 0.93), (0.13, -0.10, 0.84), 0.022, -0.0022)]
+        sweep(mb, sleeve_path(s), SLEEVE_RA, SLEEVE_RB, sides=18, color=navy, hint=(0, -1, 0), cap0=True, cap1=False)
+    # a few soft folds: inside of the elbows, and one pull from the top button towards each hip
+    folds = [((0.020, -0.120, 1.01), (0.110, -0.118, 0.90), 0.022, 0.0026),
+             ((-0.020, -0.120, 1.01), (-0.110, -0.118, 0.90), 0.022, 0.0026)]
     for s in (+1, -1):
-        a = ARM[s]; E = Vector(a['E']); W = Vector(a['W'])
-        fz = E.z
-        folds += [((E.x - s * 0.06, E.y - 0.05, fz + 0.045), (E.x + s * 0.06, E.y - 0.05, fz + 0.045), 0.012, 0.0035),
-                  ((E.x - s * 0.06, E.y - 0.05, fz + 0.005), (E.x + s * 0.06, E.y - 0.05, fz + 0.005), 0.010, -0.0030),
-                  ((E.x - s * 0.06, E.y - 0.05, fz - 0.040), (E.x + s * 0.06, E.y - 0.05, fz - 0.040), 0.012, 0.0030),
-                  ((W.x - s * 0.05, W.y - 0.02, W.z + 0.07), (W.x + s * 0.05, W.y - 0.02, W.z + 0.07), 0.012, 0.0020)]
+        E = Vector(ARM[s]['E'])
+        for dz, am in ((0.040, 0.0030), (-0.005, 0.0034), (-0.050, 0.0026)):
+            c = E + Vector((-s * 0.030, -0.010, dz))
+            folds.append((c + Vector((-s * 0.030, -0.030, 0.010)), c + Vector((s * 0.010, 0.030, -0.010)), 0.011, am))
     fold_displace(mb.bm, folds)
-    bmesh.ops.remove_doubles(mb.bm, verts=mb.bm.verts[:], dist=2e-5)
-    # check winding (torso should face outward)
-    mb.bm.normal_update()
-    bad = 0; tot = 0
-    for f in mb.bm.faces:
-        c = f.calc_center_median()
-        radial = Vector((c.x, c.y - 0.0, 0)).normalized()
-        if c.z < 1.35 and abs(c.x) < 0.14:
-            tot += 1; bad += 1 if f.normal.dot(radial) < 0 else 0
-    if tot and bad > tot / 2:
-        bmesh.ops.reverse_faces(mb.bm, faces=mb.bm.faces[:])
-    shell = mb.build('BlazerShell', [MAT['cotton'], MAT['detail']], recalc=False)
-    solidify(shell, 0.0055, -1.0)
 
-    # ---- details on top of the shell ------------------------------------------------------
-    d = MB.from_mesh(shell.data)
-    bpy.data.objects.remove(shell)
-    cotton_uv = lambda p: (p.x / tile + p.y * 0.3 / tile, p.z / tile)
+    # ---- collar: a soft roll round the back of the neck, from one lapel to the other --------------------------------
+    xc, yc, rx, ry, p = BLAZER_K(NECK_Z)
+    a0 = math.asin(clamp(gorge_x(NECK_Z) / rx, 0.0, 0.999) ** (p / 2.0))
+    N = 30; rings = []; cens = []
+    for k in range(N):
+        t = k / (N - 1)
+        phi = 1.5 * math.pi + a0 + (2 * math.pi - 2 * a0) * t
+        c_, s_ = math.cos(phi), math.sin(phi)
+        ends = smoothstep(0.0, 0.14, t) * smoothstep(1.0, 0.86, t)
+        cen = Vector((xc + (rx + 0.0025) * sgnp(c_, p), yc + (ry + 0.0025) * sgnp(s_, p), NECK_Z - 0.008))
+        rh = Vector((c_ / rx, s_ / ry, 0)).normalized()
+        mr, mz = 0.0048 * (0.45 + 0.55 * ends), 0.0135 * (0.55 + 0.45 * ends)
+        rings.append([mb.vert(cen + rh * (mr * math.cos(ps)) + Vector((0, 0, mz * math.sin(ps))), navy)
+                      for ps in [2 * math.pi * q / 8 for q in range(8)]])
+        cens.append(cen)
+    loft(mb, rings, mat=0, closed=True, centers=cens)
+    fan_cap(mb, rings[0], cens[0] - cens[1], 0, color=navy); fan_cap(mb, rings[-1], cens[-1] - cens[-2], 0, color=navy)
 
-    # notch lapels
-    outer = [(1.040, 0.004), (1.080, 0.040), (1.130, 0.071), (1.190, 0.096), (1.250, 0.112), (1.296, 0.118),
-             (1.310, 0.113), (1.322, 0.101), (1.340, 0.093), (1.370, 0.077), (1.398, 0.061)]
+    # ---- notch lapels: lie on the fronts along the V, rolled up at the inner edge -----------------------------------
+    outer = [(1.035, 0.004), (1.075, 0.040), (1.125, 0.071), (1.185, 0.096), (1.245, 0.112), (1.288, 0.118),
+             (1.300, 0.113), (1.312, 0.101), (1.330, 0.092), (1.360, 0.076), (1.388, 0.060)]
     oz = [o[0] for o in outer]; ox = [o[1] for o in outer]
-    lap_zs = np.concatenate([np.linspace(1.04, 1.30, 20), np.linspace(1.31, 1.398, 9)])
+    lap_zs = np.concatenate([np.linspace(V_Z0, 1.29, 22), np.linspace(1.298, 1.388, 10)])
     for s in (+1, -1):
         grid = []
         for z in lap_zs:
-            xi = gorge_x(z) + 0.0008
-            xo = float(np.interp(z, oz, ox))
-            xo = max(xo, xi + 0.004)
-            row = []
-            for sj in np.linspace(0, 1, 6):
-                x = lerp(xi, xo, sj)
-                lift = 0.0036 + 0.0085 * (1 - sj) ** 1.6
-                p, n = bl_surface(s * x, z, lift)
-                row.append((p, n))
+            xi = gorge_x(z)
+            xo = max(float(np.interp(z, oz, ox)), xi + 0.004)
+            row = [blazer_front(s * xi, z, 0.0003)]                     # starts on the shell's edge: no gap under the roll
+            for sj in np.linspace(0, 1, 7):
+                lift = 0.0028 + 0.0070 * (1 - sj) ** 1.6
+                row.append(blazer_front(s * lerp(xi + 0.0006, xo, sj), z, lift))
             grid.append(row)
-        surf_patch(d, grid, mat=0, color=navy, uvfn=cotton_uv)
-        # underside closing strip along the gorge to hide the gap
-    # contrast stitching along the lapel edge
-    for s in (+1, -1):
-        zz = 1.065; seg = 0.0046; gap = 0.0030
-        pts = []
-        z = 1.06
-        while z < 1.385:
-            xo = float(np.interp(z, oz, ox)) - 0.0042
-            pts.append((z, max(xo, gorge_x(z) + 0.006)))
-            z += 0.004
-        for i in range(0, len(pts) - 2, 2):
-            (za, xa), (zb, xb) = pts[i], pts[i + 1]
-            quad = []
-            for (zq, xq) in ((za, xa), (zb, xb)):
-                for w in (-0.00055, 0.00055):
-                    p, n = bl_surface(s * (xq + w), zq, 0.0036 + 0.0085 * 0.07 + 0.0007)
-                    quad.append((p, n))
-            grid = [[quad[0], quad[1]], [quad[2], quad[3]]]
-            surf_patch(d, grid, mat=1, color=col(C_STITCH))
-    # light-blue buttonhole accent on the figure's left lapel
-    z0 = 1.236; xo = float(np.interp(z0, oz, ox)); xi = gorge_x(z0)
-    xm = lerp(xi, xo, 0.62)
-    pa, na = bl_surface(xm - 0.007, z0 - 0.003, 0.0095); pb, nb = bl_surface(xm + 0.007, z0 + 0.003, 0.0095)
-    tube(d, [pa, pb], 0.0017, 0.0017, sides=6, mat=1, color=col(C_ACCENT), hint=(0, -1, 0))
-    # welt (chest) pocket on the figure's left
-    def raised_rect(x0, z0, w, h, tilt, lift, lift_low=None, mat=0, colr=navy, sf=bl_surface, nx=9, ny=4):
-        grid = []
+        surf_patch(mb, grid, mat=0, color=lapel)
+    # light-blue buttonhole on the figure's left lapel
+    z0 = 1.228
+    xm = lerp(gorge_x(z0), float(np.interp(z0, oz, ox)), 0.64)
+    pa, _ = blazer_front(xm - 0.007, z0 - 0.003, 0.0058); pb, _ = blazer_front(xm + 0.007, z0 + 0.003, 0.0058)
+    sweep(mb, [pa, pb], 0.0016, 0.0016, sides=6, color=col(C_ACCENT), hint=(0, -1, 0), cap0=True, cap1=True)
+
+    # ---- pockets: thin raised panels lying on the cloth ---------------------------------------------------------------
+    def panel(x0, z0, w, h, tilt, lift, nx=11, ny=5):
         ct, st = math.cos(tilt), math.sin(tilt)
+        grid = []
         for i in range(ny):
             vv = i / (ny - 1) * 2 - 1
             row = []
             for j in range(nx):
                 uu = j / (nx - 1) * 2 - 1
                 lx, lz = uu * w / 2, vv * h / 2
-                x = x0 + lx * ct - lz * st; z = z0 + lx * st + lz * ct
                 edge = min(1 - abs(uu), 1 - abs(vv))
-                l = lift * smoothstep(0.0, 0.16, edge)
-                if lift_low is not None: l += lift_low * smoothstep(0.3, -1.0, vv) * smoothstep(0.0, 0.16, edge)
-                p, n = sf(x, z, l + 0.0003)
-                row.append((p, n))
+                row.append(blazer_front(x0 + lx * ct - lz * st, z0 + lx * st + lz * ct, 0.0002 + lift * smoothstep(0.0, 0.30, edge)))
             grid.append(row)
-        surf_patch(d, grid, mat=mat, color=colr, uvfn=cotton_uv)
-    raised_rect(0.092, 1.205, 0.100, 0.015, math.radians(5), 0.0026)
-    # flap hip pockets
+        surf_patch(mb, grid, mat=0, color=navy)
+    panel(0.098, 1.192, 0.092, 0.013, math.radians(5), 0.0020)                  # chest welt, figure's left
     for s in (+1, -1):
-        raised_rect(s * 0.098 + (-0.006), 0.868, 0.150, 0.046, math.radians(-3 * s), 0.0034, lift_low=0.0018)
-    # small ticket pocket on the figure's right
-    raised_rect(-0.100, 0.925, 0.072, 0.030, math.radians(-3), 0.0028, lift_low=0.0012)
-    # front buttons (2) and cuff buttons (3-4 each)
-    def button(center, nrm, r, h, color):
-        ax = nrm.normalized()
-        tube(d, [center - ax * 0.001, center + ax * h], r, r, sides=12, mat=1, color=color, hint=(0, 0, 1), cap0=True, cap1=True)
-    for z in (1.040, 0.938):
-        p, n = bl_surface(0.0, z, 0.0004)
-        button(p, n, 0.0098, 0.0042, col(C_BUTTON))
-        button(p, n, 0.0030, 0.0053, col('#262E3B'))
-    for s in (+1, -1):
-        path = sleeve_path(s)
-        for k in range(4):
-            idx = len(path) - 1 - 2 - k * 2
-            # position on the outer-rear side of the sleeve
-            p = path[idx]; t = (path[idx + 1] - path[idx - 1]).normalized()
-            out = Vector((s, 0.25, 0)); out = (out - t * out.dot(t)).normalized()
-            rr = 0.0415 - 0.0012 * (len(path) - 1 - idx) / 2
-            button(p + out * (rr + 0.0003), out, 0.0052, 0.0030, col(C_BUTTON))
-    blazer = d.build('Blazer', [MAT['cotton'], MAT['detail']], recalc=False)
-    return blazer
+        panel(s * 0.106, 0.868, 0.128, 0.040, math.radians(-3 * s), 0.0026)      # hip flaps
 
-# ============================================================================= SHIRT
+    # ---- buttons: two at the front, three on each cuff ----------------------------------------------------------------
+    for z in BUTTON_Z:
+        p_, n_ = blazer_front(0.004, z, 0.0004)
+        stud(mb, p_, n_, 0.0100, 0.0038, col(C_BUTTON))
+        stud(mb, p_ + n_ * 0.0038, n_, 0.0036, 0.0010, col('#262E3B'), sides=10)
+    for s in (+1, -1):
+        path = sleeve_path(s); n = len(path)
+        for k in range(3):
+            i = n - 2 - k
+            t = (path[i + 1] - path[i - 1]).normalized()
+            out = Vector((s, 0.45, 0)); out = (out - t * out.dot(t)).normalized()
+            hint = Vector((0, -1, 0)); N_ = (hint - t * hint.dot(t)).normalized(); B_ = t.cross(N_)
+            ca, cb = out.dot(N_), out.dot(B_)
+            rr = 1.0 / math.sqrt((ca / SLEEVE_RA(i / (n - 1))) ** 2 + (cb / SLEEVE_RB(i / (n - 1))) ** 2)
+            stud(mb, path[i] + out * (rr + 0.0002), out, 0.0050, 0.0026, col(C_BUTTON), sides=10)
+    return mb.build('Blazer', [MAT['cloth']], recalc=False)
+
+# ============================================================================= SHIRT (white dress shirt: seen in the V, at the collar and at the cuffs)
 def build_shirt():
     mb = MB()
     white = col(C_SHIRT)
-    zs = np.concatenate([np.linspace(0.955, 1.30, 12), np.linspace(1.315, 1.40, 6)])
+    S = 32
+    zs = np.concatenate([np.linspace(0.985, 1.30, 10), np.linspace(1.315, NECK_Z - 0.004, 6)])
     rings = []
     for z in zs:
-        xc, yc, rx, ry = shirt_ring(z)
-        rings.append([mb.vert((xc - rx * math.sin(2 * math.pi * j / 28), yc + ry * math.cos(2 * math.pi * j / 28), z), white) for j in range(28)])
-    ring_loft(mb, rings, True, True, False, 0)
+        xc, yc, rx, ry, p = BLAZER_K(z)
+        rings.append([mb.vert((xc + (rx - SHIRT_IN) * sgnp(math.cos(2 * math.pi * j / S), p),
+                               yc + (ry - SHIRT_IN) * sgnp(math.sin(2 * math.pi * j / S), p), z), white) for j in range(S)])
+    loft(mb, rings, mat=0, closed=True)
+    fan_cap(mb, rings[0], Vector((0, 0, -1)), 0, color=white)
     # collar band, buttoned up
-    cz = [1.385, 1.400, 1.413, 1.423]
-    rr = [0.0595, 0.0580, 0.0575, 0.0585]
+    CY = 0.010
     rings = []
-    for z, r in zip(cz, rr):
-        rings.append([mb.vert((0 - r * math.sin(2 * math.pi * j / 26), 0.010 + (r - 0.001) * math.cos(2 * math.pi * j / 26), z), white) for j in range(26)])
-    ring_loft(mb, rings, True, True, True, 0)
-    # point collar wings
+    for z, r in zip([1.368, 1.386, 1.402, 1.413], [0.0625, 0.0610, 0.0604, 0.0610]):
+        rings.append([mb.vert((r * math.cos(2 * math.pi * j / 28), CY + (r - 0.001) * math.sin(2 * math.pi * j / 28), z), white) for j in range(28)])
+    loft(mb, rings, mat=0, closed=True)
+    # collar points, folded down over the band
     def collar_surf(x, z, lift):
-        xc, yc, rx, ry = 0.0, 0.010, 0.0585, 0.0575
-        t = clamp((x - xc) / rx, -0.995, 0.995)
-        y = yc - ry * math.sqrt(1 - t * t)
-        n = Vector(((x - xc) / rx ** 2, (y - yc) / ry ** 2, 0)).normalized()
+        rx, ry = 0.0612, 0.0602
+        t = clamp(x / rx, -0.995, 0.995)
+        y = CY - ry * math.sqrt(1 - t * t)
+        n = Vector((x / rx ** 2, (y - CY) / ry ** 2, 0)).normalized()
         return Vector((x, y, z)) + n * lift, n
     for s in (+1, -1):
-        quad = [(0.012, 1.426), (0.040, 1.412), (0.046, 1.362), (0.019, 1.376)]
-        grid = []
-        for a in range(2):
-            row = []
-            for b in range(2):
-                pass
-        # build a small 5x3 grid across the wing polygon
+        quad = [(0.012, 1.416), (0.040, 1.403), (0.046, 1.352), (0.019, 1.366)]
         P = [Vector((q[0], q[1], 0)) for q in quad]
-        for i in range(6):
-            ti = i / 5; row = []
+        grid = []
+        for i in range(7):
+            ti = i / 6; row = []
             L = P[0].lerp(P[3], ti); R_ = P[1].lerp(P[2], ti)
-            for j in range(4):
-                tj = j / 3; q = L.lerp(R_, tj)
-                # wing bends forward/out from the collar
-                lift = 0.0016 + 0.0040 * tj ** 1.3 * (0.5 + 0.5 * ti)
-                p, n = collar_surf(s * q.x, q.y - 0.002 * tj, lift + 0.0006)
-                # wrap a bit around the neck so it follows the shirt/blazer below
-                row.append((p, n))
+            for j in range(5):
+                tj = j / 4; q = L.lerp(R_, tj)
+                lift = 0.0018 + 0.0040 * tj ** 1.3 * (0.5 + 0.5 * ti)
+                row.append(collar_surf(s * q.x, q.y - 0.002 * tj, lift))
             grid.append(row)
         surf_patch(mb, grid, mat=0, color=white)
-    # buttons
-    for z in (1.285, 1.180, 1.075):
-        p, n = sh_surface(0.0, z, 0.0004)
-        tube(mb, [p - n * 0.0008, p + n * 0.0024], 0.0040, 0.0040, sides=10, mat=1, color=col('#EDEDE8'), hint=(0, 0, 1))
-    # cuffs poking out of the sleeves
+    # buttons down the front
+    for z in (1.278, 1.178, 1.078):
+        p_, n_ = shirt_front(0.0, z, 0.0003)
+        stud(mb, p_, n_, 0.0040, 0.0022, col('#E4E4DE'), sides=10)
+    # cuffs showing below the blazer sleeves
     for s in (+1, -1):
         a = ARM[s]; E = Vector(a['E']); W = Vector(a['W']); f = (W - E).normalized()
-        tube(mb, [W - f * 0.03, W + f * 0.016], 0.0360, 0.0338, sides=14, mat=0, color=white, hint=(0, -1, 0), cap0=False, cap1=False)
-    return mb.build('Shirt', [MAT['shirt'], MAT['detail']], recalc=False)
+        sweep(mb, [W - f * 0.040, W - f * 0.012, W + f * 0.012], [0.0350, 0.0350, 0.0335], [0.0340, 0.0340, 0.0325], sides=16,
+              color=white, hint=(0, -1, 0))
+    return mb.build('Shirt', [MAT['cloth']], recalc=False)
 
 # ============================================================================= BOW TIE
 def build_bowtie():
     mb = MB()
-    cy, cz = -0.0560, 1.3935
+    cy, cz = -0.0590, 1.3835
     rot = math.radians(32)
     tile = 0.05
     def uvpos(p):
@@ -1171,96 +1237,130 @@ def build_bowtie():
          color=white, hint=(0, -1, 0), power=3.0, uvpos=uvpos)
     return mb.build('BowTie', [MAT['tartan']], recalc=True)
 
-# ============================================================================= TROUSERS
-def leg_path(s):
-    L = LEG[s]
-    return catmull([L['H'], L['K'], L['A'], (L['A'][0], L['A'][1] - 0.002, 0.060)], 6)
+# ============================================================================= TROUSERS (dark navy, straight leg)
+# Above the blazer's hem everything stays ~1.5 cm inside the blazer, so the trousers never show through it, standing or
+# walking. The two legs lie flat against each other at the top and separate further down.
+TROUSER_TOP, TROUSER_HEM = 0.93, 0.088
+def trouser_leg(z):
+    """one leg at height z: (centre x for the +X leg, half-width, half-depth, squareness of the inner side)"""
+    xo = float(np.interp(z, [0.088, 0.20, 0.40, 0.60, 0.82, 0.93], [0.1405, 0.1415, 0.146, 0.152, 0.155, 0.150]))
+    xi = float(np.interp(z, [0.088, 0.20, 0.47, 0.70, 0.78, 0.93], [0.0465, 0.0450, 0.030, 0.012, 0.004, 0.003]))
+    ry = float(np.interp(z, [0.088, 0.20, 0.47, 0.80, 0.93], [0.0570, 0.0575, 0.068, 0.098, 0.098]))
+    return (xo + xi) / 2, (xo - xi) / 2, ry, lerp(2.0, 5.0, smoothstep(0.62, 0.78, z))
 
 def build_trousers():
     mb = MB()
-    tile = WEAVE_TILE
     dark = col(C_TROUSER)
-    # pelvis / waist
-    zs = np.linspace(1.04, 0.775, 8)
+    S = 32
+    # waist + seat (hidden under the blazer)
     rings = []
-    for z in zs:
-        xc, yc, rx, ry = shirt_ring(min(max(z, 0.955), 1.4))
-        sh = 1.0 - 0.40 * smoothstep(0.93, 0.79, z)
-        shy = 1.0 - 0.30 * smoothstep(0.92, 0.77, z)
-        rings.append([mb.vert((xc - (rx + 0.004) * sh * math.sin(2 * math.pi * j / 28), yc + (ry + 0.004) * shy * math.cos(2 * math.pi * j / 28), z), dark) for j in range(28)])
-    ring_loft(mb, rings, True, True, True, 0, uvpos=lambda p: (p.x / tile + p.y * 0.3 / tile, p.z / tile))
+    for z in np.linspace(1.02, 0.775, 9):
+        rx = float(np.interp(z, [0.775, 0.80, 0.86, 0.93, 1.02], [0.100, 0.138, 0.150, 0.150, 0.146]))
+        ry = float(np.interp(z, [0.775, 0.80, 0.86, 0.93, 1.02], [0.060, 0.074, 0.094, 0.104, 0.104]))
+        rings.append([mb.vert((rx * sgnp(math.cos(2 * math.pi * j / S), 2.4), 0.002 + ry * sgnp(math.sin(2 * math.pi * j / S), 2.4), z), dark)
+                      for j in range(S)])
+    loft(mb, rings, mat=0, closed=True)
+    fan_cap(mb, rings[0], Vector((0, 0, 1)), 0, color=dark); fan_cap(mb, rings[-1], Vector((0, 0, -1)), 0, color=dark)
     for s in (+1, -1):
-        path = leg_path(s)
-        tube(mb, path, [0.092, 0.084, 0.068, 0.063, 0.064, 0.066], [0.082, 0.075, 0.064, 0.060, 0.061, 0.0635],
-             sides=18, mat=0, color=dark, hint=(0, -1, 0), cap0=True, cap1=True, uvtile=tile)
+        pts = leg_pts(s)
+        zz = [p[2] for p in pts][::-1]; ys = [p[1] for p in pts][::-1]
+        rings = []
+        for z in np.concatenate([np.linspace(TROUSER_TOP, 0.50, 10), np.linspace(0.45, TROUSER_HEM, 10)]):
+            cx, rx, ry, p_in = trouser_leg(z)
+            cy = float(np.interp(z, zz, ys)) + 0.004 * smoothstep(0.40, 0.10, z)
+            ring = []
+            for j in range(S):
+                th = (j / S - 0.5) * 2 * math.pi
+                sx, cq = math.sin(th), math.cos(th)
+                if sx * s < 0: sx = sgnp(sx, p_in); cq = sgnp(cq, p_in)           # inner side: flat where the legs meet
+                ring.append(mb.vert((s * cx + sx * rx, cy - cq * ry, z), dark))
+            rings.append(ring)
+        loft(mb, rings, mat=0, closed=True)
+    # the cloth breaks softly over the shoes
     folds = []
     for s in (+1, -1):
-        L = LEG[s]; A = Vector(L['A']); K = Vector(L['K'])
-        for zz, am in ((0.150, 0.0045), (0.118, 0.0040), (0.092, 0.0030)):
-            folds.append(((A.x - s * 0.08, A.y - 0.07, zz), (A.x + s * 0.08, A.y - 0.07, zz), 0.0085, am))
-        folds.append(((K.x - 0.05, K.y - 0.07, K.z + 0.02), (K.x + 0.05, K.y - 0.07, K.z + 0.02), 0.016, 0.0030 if s > 0 else 0.0012))
-        folds.append(((K.x - 0.05, K.y - 0.07, K.z - 0.07), (K.x + 0.05, K.y - 0.07, K.z - 0.07), 0.016, 0.0020 if s > 0 else 0.0008))
+        A = Vector(leg_pts(s)[2])
+        for z_, am in ((0.175, 0.0030), (0.135, 0.0036)):
+            folds.append(((A.x - 0.06, -0.060, z_), (A.x + 0.06, -0.060, z_ + s * 0.006), 0.010, am))
     fold_displace(mb.bm, folds)
-    return mb.build('Trousers', [MAT['cotton']], recalc=True)
+    return mb.build('Trousers', [MAT['cloth']], recalc=False)
 
-# ============================================================================= SHOES
-SHOE_Y = [0.080, 0.072, 0.056, 0.030, 0.000, -0.040, -0.080, -0.120, -0.160, -0.190, -0.208, -0.218]
-SHOE_W = [0.020, 0.031, 0.037, 0.039, 0.041, 0.045, 0.049, 0.050, 0.048, 0.043, 0.031, 0.008]
-SHOE_T = [0.050, 0.080, 0.092, 0.092, 0.090, 0.084, 0.074, 0.063, 0.056, 0.050, 0.041, 0.028]
-SHOE_B = [0.017, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.004, 0.009, 0.014, 0.019]
+# ============================================================================= SHOES (tan suede lace-ups; the shape is Toma's sneaker without the high top)
+# local frame: origin on the floor under the ankle, toe toward -Y.
+Y_TOE = -0.2185                           # toe tip
+Y_BACK = 0.066                            # back of the heel counter
+UPPER_Z0 = 0.016                          # the canvas starts inside the sole
+SOLE_TOP = 0.023
+_PY = [-0.2185, -0.190, -0.160, -0.120, -0.080, -0.040, 0.000, 0.030, 0.066]
+_PW = [0.0465, 0.0490, 0.0510, 0.0520, 0.0510, 0.0490, 0.0470, 0.0460, 0.0450]     # half width
+_PT = [0.0400, 0.0460, 0.0540, 0.0640, 0.0720, 0.0780, 0.0820, 0.0830, 0.0800]     # top of the canvas
+def end_round(y):
+    """1 along the shoe, falling to 0 in a quarter circle at the toe tip and at the back of the heel"""
+    a = clamp((y - Y_TOE) / 0.044, 0, 1); b = clamp((Y_BACK - y) / 0.034, 0, 1)
+    return math.sqrt(max(0.0, 1 - (1 - a) ** 2)) * math.sqrt(max(0.0, 1 - (1 - b) ** 2))
+def sb_(y): return 0.009 * smoothstep(-0.150, Y_TOE, y) ** 1.5                      # toe spring
+def sw_(y): return float(np.interp(y, _PY, _PW)) * end_round(y) ** 0.9
+def st_(y):
+    return UPPER_Z0 + (float(np.interp(y, _PY, _PT)) - UPPER_Z0) * (0.30 + 0.70 * end_round(y) ** 0.8) + 0.5 * sb_(y)
+def shoe_stations():
+    toe = [0.00001, 0.0002, 0.0010, 0.0032, 0.0075, 0.0140, 0.0225, 0.0325, 0.0440]
+    heel = [0.0340, 0.0240, 0.0150, 0.0080, 0.0032, 0.0010, 0.0002, 0.00001]
+    mid = list(np.linspace(Y_TOE + 0.044, Y_BACK - 0.034, 9))[1:-1]
+    return [Y_TOE + d for d in toe] + mid + [Y_BACK - d for d in heel]
 
-def shoe_ring(y, a, zb, zt, p=2.8, S=18, ofs=0.0):
+def super_ring(mb, y, a, zb, zt, p=2.8, S=20, color=(1, 1, 1, 1)):
     cz = (zt + zb) / 2; b = max((zt - zb) / 2, 0.0008); a = max(a, 0.0008)
-    out = []
+    ring = []
     for j in range(S):
         th = 2 * math.pi * j / S
-        c, s_ = math.cos(th), math.sin(th)
-        out.append(Vector((a * sgnpow(c, 2 / p), y, cz + b * sgnpow(s_, 2 / p))))
-    return out
+        ring.append(mb.vert((a * sgnp(math.cos(th), p), y, cz + b * sgnp(math.sin(th), p)), color))
+    return ring, cz, b, a
 
 def build_shoes():
     mb = MB()
+    suede, sole_c, lace_c, sock = col(C_SUEDE), col(C_SOLE), col(C_LACE), col(C_SOCK)
+    S = 20
+    stations = shoe_stations()
+    ymid = (Y_TOE + Y_BACK) / 2
     for s in (+1, -1):
-        L = LEG[s]
-        M = Matrix.Translation((L['A'][0], L['A'][1], 0.0)) @ Matrix.Rotation(L['yaw'], 4, 'Z')
-        mb.M = M
-        rings = []
-        for k in range(len(SHOE_Y)):
-            rings.append([mb.vert(p, col(C_SUEDE)) for p in shoe_ring(SHOE_Y[k], SHOE_W[k], SHOE_B[k] + 0.006, SHOE_T[k])])
-        ring_loft(mb, rings, True, True, True, 0)
-        # sole (lighter tan edge)
-        rings = []
-        for k in range(len(SHOE_Y)):
-            sole_top = SHOE_B[k] + 0.0170 if SHOE_B[k] > 0.001 else (0.027 if SHOE_Y[k] > 0.02 else 0.0170)
-            rings.append([mb.vert(p, col(C_SOLE)) for p in shoe_ring(SHOE_Y[k], SHOE_W[k] * 1.04 + 0.001, SHOE_B[k], sole_top, p=4.0)])
-        ring_loft(mb, rings, True, True, True, 0)
-        # laces across the vamp
-        for yl in (-0.040, -0.062, -0.084, -0.106):
-            a = float(np.interp(-yl, [-x for x in SHOE_Y][::-1], SHOE_W[::-1]))
-            zt = float(np.interp(-yl, [-x for x in SHOE_Y][::-1], SHOE_T[::-1]))
-            zb = float(np.interp(-yl, [-x for x in SHOE_Y][::-1], SHOE_B[::-1])) + 0.006
+        A = leg_pts(s)[2]
+        mb.M = Matrix.Translation((A[0], A[1], 0.0)) @ Matrix.Rotation(LEG_YAW[s], 4, 'Z')
+        # suede upper (toe -> heel), closed on top: the trouser leg comes down over it
+        rings = [super_ring(mb, y, sw_(y), sb_(y) + UPPER_Z0, st_(y), 2.8, S, color=suede)[0] for y in stations]
+        loft(mb, rings, mat=0, closed=True)
+        fan_cap(mb, rings[0], Vector((0, -1, 0)), 0, color=suede); fan_cap(mb, rings[-1], Vector((0, 1, 0)), 0, color=suede)
+        # crepe sole: the shoe's outline pulled straight up, a touch longer and wider than the upper
+        def outline(z_of_y, inset, grow):
+            pts = []
+            for sgn, ys_ in ((+1, stations), (-1, stations[::-1])):
+                for y in ys_:
+                    a = max(sw_(y) * 1.035 + 0.0016 - inset, 0.0002)
+                    pts.append(mb.vert((sgn * a, ymid + (y - ymid) * grow, z_of_y(y)), sole_c))
+            return pts
+        sole_top = lambda y: SOLE_TOP - 0.003 + sb_(y)
+        rings = [outline(lambda y: 0.0, 0.0030, 1.006), outline(lambda y: 0.0035, 0.0, 1.016),
+                 outline(lambda y: sole_top(y) - 0.0030, 0.0, 1.016), outline(sole_top, 0.0028, 1.008)]
+        loft(mb, rings, mat=0, closed=True)
+        fan_cap(mb, rings[0], Vector((0, 0, -1)), 0, color=sole_c); fan_cap(mb, rings[-1], Vector((0, 0, 1)), 0, color=sole_c)
+        # laces, toe seam, bow
+        def upper(y, u, lift=0.0):
+            a = sw_(y); zt = st_(y); zb = sb_(y) + UPPER_Z0
             cz = (zt + zb) / 2; b = (zt - zb) / 2
-            path = []
-            for u in np.linspace(-0.55, 0.55, 7):
-                x = a * u
-                z = cz + b * (max(0.0, 1 - abs(u) ** 2.8)) ** (1 / 2.8) + 0.0012
-                path.append(Vector((x, yl, z)))
-            tube(mb, path, 0.0026, 0.0026, sides=6, mat=0, color=col(C_LACE), hint=(0, 1, 0), cap0=True, cap1=True)
-        # toe-cap seam and lace bow
-        def upper(yq, u):
-            a = float(np.interp(-yq, [-x for x in SHOE_Y][::-1], SHOE_W[::-1]))
-            zt = float(np.interp(-yq, [-x for x in SHOE_Y][::-1], SHOE_T[::-1]))
-            zb = float(np.interp(-yq, [-x for x in SHOE_Y][::-1], SHOE_B[::-1])) + 0.006
-            cz = (zt + zb) / 2; b = (zt - zb) / 2
-            return Vector((a * u, yq, cz + b * (max(0.0, 1 - abs(u) ** 2.8)) ** (1 / 2.8)))
-        seam = [upper(-0.168, u) + Vector((0, 0, 0.0009)) for u in np.linspace(-0.9, 0.9, 9)]
-        tube(mb, seam, 0.0015, 0.0015, sides=5, mat=0, color=col('#3E2C20'), hint=(0, 1, 0))
-        k0 = upper(-0.030, 0.0) + Vector((0, 0, 0.0026))
+            return Vector((a * u, y, cz + b * (max(0.0, 1 - abs(u) ** 2.8)) ** (1 / 2.8) + lift))
+        for y in (-0.050, -0.072, -0.094, -0.116):
+            sweep(mb, [upper(y, u, 0.0012) for u in np.linspace(-0.5, 0.5, 7)], 0.0025, 0.0025, sides=6, color=lace_c,
+                  hint=(0, 1, 0), cap0=True, cap1=True)
+        sweep(mb, [upper(-0.172, u, 0.0008) for u in np.linspace(-0.88, 0.88, 11)], 0.0014, 0.0014, sides=5, color=col('#4A3626'),
+              hint=(0, 1, 0), cap0=True, cap1=True)
+        k0 = upper(-0.040, 0.0, 0.0026)
         for sx in (+1, -1):
             loop = [k0, k0 + Vector((sx * 0.007, -0.003, 0.0045)), k0 + Vector((sx * 0.015, -0.002, 0.0020)), k0 + Vector((sx * 0.017, 0.004, -0.0010))]
-            tube(mb, catmull(loop, 3), 0.0021, 0.0021, sides=5, mat=0, color=col(C_LACE), hint=(0, 0, 1))
+            sweep(mb, catmull(loop, 3), 0.0021, 0.0021, sides=5, color=lace_c, hint=(0, 0, 1), cap0=True, cap1=True)
+        # dark sock filling the trouser leg above the shoe
+        sweep(mb, [Vector((0, 0.008, 0.030)), Vector((0, 0.008, 0.100)), Vector((0, 0.006, 0.170))], 0.0370, 0.0400, sides=14,
+              color=sock, hint=(0, -1, 0), cap1=True)
         mb.M = None
-    return mb.build('Shoes', [MAT['detail']], recalc=True)
+    return mb.build('Shoes', [MAT['cloth']], recalc=False)
 
 # ============================================================================= ASSEMBLE
 def transform_obj(obj, M): obj.data.transform(M)
@@ -1277,33 +1377,33 @@ def assemble():
     shoes = build_shoes()
     objs = dict(Head=head, Hair=hair, Glasses=glasses, Goatee=goatee, Body=body, Blazer=blazer, Shirt=shirt,
                 BowTie=bow, Trousers=trousers, Shoes=shoes)
+    for n, o in objs.items():
+        o.name = n; o.data.name = n
 
+    # head: chin very slightly raised + figurine head scale, baked into the geometry (the node rotation stays identity)
     PIVOT = Vector((0.0, 0.010, 1.360))
-    # chin very slightly raised (baked into the geometry so the node rotation stays identity)
     R = Matrix.Translation(PIVOT) @ Matrix.Rotation(-math.radians(CHIN_RAISE_DEG), 4, 'X') @ Matrix.Translation(-PIVOT)
-    HS = 0.97
     ANCHOR = Vector((0.0, 0.010, 1.425))
-    Sc = Matrix.Translation(ANCHOR) @ Matrix.Diagonal((HS, HS, HS, 1.0)) @ Matrix.Translation(-ANCHOR)
-    for n in ('Head', 'Hair', 'Glasses', 'Goatee'): transform_obj(objs[n], R @ Sc)
+    Sc = Matrix.Translation(ANCHOR) @ Matrix.Diagonal((HEAD_SCALE, HEAD_SCALE, HEAD_SCALE, 1.0)) @ Matrix.Translation(-ANCHOR)
+    HEAD_PARTS = ('Head', 'Hair', 'Glasses', 'Goatee')
+    for n in HEAD_PARTS: transform_obj(objs[n], R @ Sc)
 
-    # normalise total height (top of hair) to the target
-    zmax = max(v.co.z for v in objs['Hair'].data.vertices)
-    zmin = min(v.co.z for o in objs.values() for v in o.data.vertices)
-    k = TARGET_HEIGHT / (zmax - zmin)
+    k = BODY_SCALE
     S = Matrix.Diagonal((k, k, k, 1.0))
     for o in objs.values(): transform_obj(o, S)
     PIVOT = PIVOT * k
-    print('[build] height scale factor %.4f (raw height %.4f m)' % (k, zmax - zmin))
+    zmax = max(v.co.z for v in objs['Hair'].data.vertices)
+    zmin = min(v.co.z for o in objs.values() for v in o.data.vertices)
+    print('[build] height %.4f m (floor at z = %.4f), body scale %.4f' % (zmax - zmin, zmin, k))
 
-    # Head pivot at neck base; Hair/Glasses/Goatee parented to Head
+    # Head pivot at the base of the neck; Hair / Glasses / Goatee parented to Head
     transform_obj(objs['Head'], Matrix.Translation(-PIVOT))
     objs['Head'].location = PIVOT
     bpy.context.view_layer.update()
     inv = objs['Head'].matrix_world.inverted()
-    for n in ('Hair', 'Glasses', 'Goatee'):
+    for n in HEAD_PARTS[1:]:
         objs[n].parent = objs['Head']; objs[n].matrix_parent_inverse = inv
-    for o in objs.values():
-        o.data.update()
+    for o in objs.values(): o.data.update()
     return objs
 
 # ============================================================================= EXPORT / STATS
@@ -1336,8 +1436,8 @@ def glb_report(path):
     hier = {n['name']: [js['nodes'][c]['name'] for c in n.get('children', [])] for n in js['nodes'] if n.get('children')}
     vc = sum(1 for m in js['meshes'] for p in m['primitives'] if 'COLOR_0' in p['attributes'])
     return dict(triangles=tris, nodes=names, hierarchy=hier, materials=[m['name'] for m in js['materials']],
-                primitives_with_COLOR_0=vc, images=len(js.get('images', [])),
-                alpha_modes={m['name']: m.get('alphaMode', 'OPAQUE') for m in js['materials']})
+                primitives_with_COLOR_0=vc, images=[(i.get('name'), i.get('mimeType')) for i in js.get('images', [])],
+                double_sided=[m['name'] for m in js['materials'] if m.get('doubleSided')])
 
 # ============================================================================= RENDER
 def render_previews(objs, tag):
@@ -1353,7 +1453,6 @@ def render_previews(objs, tag):
     world = bpy.data.worlds.new('Studio'); world.use_nodes = True
     bg = world.node_tree.nodes['Background']; bg.inputs[0].default_value = (0.215, 0.215, 0.215, 1); bg.inputs[1].default_value = 1.0
     scn.world = world
-    # floor
     bpy.ops.mesh.primitive_plane_add(size=14, location=(0, 0, 0))
     floor = bpy.context.active_object
     fm = bpy.data.materials.new('Floor'); fm.use_nodes = True
@@ -1368,29 +1467,32 @@ def render_previews(objs, tag):
     cam_d = bpy.data.cameras.new('Cam'); cam_d.lens = 85
     cam = bpy.data.objects.new('Cam', cam_d); scn.collection.objects.link(cam); scn.camera = cam
     lights = []
-    for nm, size, energy in (('Key', 2.2, 380), ('Fill', 3.0, 130), ('Rim', 1.6, 320)):
+    for nm, size, energy in (('Key', 2.2, 215), ('Fill', 3.0, 90), ('Rim', 1.6, 190)):
         ld = bpy.data.lights.new(nm, 'AREA'); ld.size = size; ld.energy = energy
         lo = bpy.data.objects.new(nm, ld); scn.collection.objects.link(lo); lights.append(lo)
 
     def place(az_deg, dist, target, elev=0.0, light_scale=1.0):
         az = math.radians(az_deg)
-        # az 0 = in front of the figure (-Y), + toward the figure's left (+X)
         cam.location = Vector((target[0] + math.sin(az) * dist, target[1] - math.cos(az) * dist, target[2] + elev))
         look_at(cam, target)
-        # 3-point rig relative to camera azimuth
         def pos(off, d, h):
             a = math.radians(az_deg + off)
             return Vector((target[0] + math.sin(a) * d, target[1] - math.cos(a) * d, target[2] + h))
         specs = [(-42, 3.0, 1.2), (48, 3.2, 0.2), (170, 3.0, 1.1)]
-        for lo, (off, d, h), base in zip(lights, specs, (380, 130, 320)):
+        for lo, (off, d, h), base in zip(lights, specs, (215, 90, 190)):
             lo.location = pos(off, d * light_scale, h)
             look_at(lo, target)
             lo.data.energy = base * light_scale ** 2
 
-    shots = [('front', 0, 4.5, (0, 0, 0.83), 0.0, 1.0), ('three_quarter_left', 40, 4.5, (0, 0, 0.83), 0.0, 1.0),
-             ('side', 90, 4.5, (0, 0, 0.83), 0.0, 1.0), ('back', 180, 4.5, (0, 0, 0.83), 0.0, 1.0),
-             ('head_front', 0, 1.25, (0, -0.02, 1.52), 0.0, 0.5), ('head_three_quarter', 35, 1.25, (0, -0.02, 1.52), 0.0, 0.5),
-             ('torso_three_quarter', 30, 2.6, (0, 0, 1.10), 0.0, 0.7), ('legs_three_quarter', 30, 2.6, (0, 0, 0.45), 0.0, 0.7)]
+    shots = [('front', 0, 4.6, (0, 0, 0.85), 0.0, 1.0), ('three_quarter_left', 40, 4.6, (0, 0, 0.85), 0.0, 1.0),
+             ('side', 90, 4.6, (0, 0, 0.85), 0.0, 1.0), ('back', 180, 4.6, (0, 0, 0.85), 0.0, 1.0),
+             ('head_front', 0, 1.25, (0, -0.02, 1.56), 0.0, 0.5), ('head_three_quarter', 35, 1.25, (0, -0.02, 1.56), 0.0, 0.5),
+             ('head_back', 160, 1.25, (0, 0.0, 1.56), 0.0, 0.5),
+             ('hands', 60, 1.5, (0.30, -0.04, 0.80), 0.0, 0.45),
+             ('torso_three_quarter', 30, 2.6, (0, 0, 1.12), 0.0, 0.7), ('legs_three_quarter', 30, 2.6, (0, 0, 0.45), 0.0, 0.7),
+             ('shoes', 35, 1.5, (0, -0.05, 0.14), 0.15, 0.45)]
+    if isinstance(SHOTS, str):
+        shots = [sh for sh in shots if sh[0] in SHOTS.split(',')]
     paths = []
     for name, az, dist, tgt, elev, ls in shots:
         place(az, dist, tgt, elev, ls)
@@ -1398,7 +1500,7 @@ def render_previews(objs, tag):
         scn.render.filepath = p
         bpy.ops.render.render(write_still=True)
         paths.append(p); print('[render]', p)
-    # contact sheet of the 4 full-body views
+    if isinstance(SHOTS, str): return
     imgs = []
     for p in paths[:4]:
         im = bpy.data.images.load(p); w, h = im.size
@@ -1411,15 +1513,14 @@ def render_previews(objs, tag):
     print('[render] contact sheet', out.filepath_raw)
 
 # ============================================================================= MAIN
-if __name__ == '__main__' or True:
-    objs = assemble()
-    tot = 0
-    for n, o in objs.items():
-        t = tri_count(o); tot += t
-        print('[tris] %-9s %6d   verts %6d' % (n, t, len(o.data.vertices)))
-    print('[tris] TOTAL     %6d' % tot)
-    export_glb(objs)
-    rep = glb_report(OUT_GLB)
-    print('[glb]', json.dumps(rep, indent=1))
-    if DO_RENDER:
-        render_previews(objs, TAG)
+objs = assemble()
+tot = 0
+for n, o in objs.items():
+    t = tri_count(o); tot += t
+    print('[tris] %-9s %6d   verts %6d' % (n, t, len(o.data.vertices)))
+print('[tris] TOTAL     %6d' % tot)
+export_glb(objs)
+rep = glb_report(OUT_GLB)
+print('[glb]', json.dumps(rep, indent=1))
+if DO_RENDER:
+    render_previews(objs, TAG)

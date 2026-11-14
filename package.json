@@ -1,0 +1,23 @@
+{
+  "name": "shaxed-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Marius Toma: CV site with 3D figurines and a blog",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --watch server/index.js"
+  },
+  "dependencies": {
+    "@fontsource-variable/archivo": "^5.3.0",
+    "@fontsource-variable/bodoni-moda": "^5.3.0",
+    "compression": "^1.8.2",
+    "express": "^5.3.0",
+    "marked": "^18.2.0",
+    "sanitize-html": "^2.18.2",
+    "three": "^0.160.0"
+  }
+}

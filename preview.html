@@ -121,6 +121,9 @@ scene.add(key, key.target);
 const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.01, 100);
 camera.position.set(0, 1, 6);
 const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true;
+// Wheel zoom is multiplicative: with no limits it shrinks the distance towards 0 (and then can't zoom back out),
+// or flies out past the fog/far plane. Keep the camera in a sane range.
+controls.minDistance = 0.4; controls.maxDistance = 40; controls.zoomSpeed = 0.8;
 
 const TILE = 0.5, FLOOR_SIZE = 40;
 const floorTex = (() => {
@@ -276,21 +279,22 @@ function meshIslands(geo, toRoot) {
 /* ----- automatic humanoid rig: bones + per-vertex skin weights from body proportions ----- */
 function buildRig(root, box) {
   const H = box.max.y - box.min.y, y0 = box.min.y;
-  const hipY = y0 + 0.525 * H, kneeY = y0 + 0.27 * H, shY = y0 + 0.77 * H, elY = y0 + 0.60 * H;
+  const hipY = y0 + 0.525 * H, kneeY = y0 + 0.27 * H, ankleY = y0 + 0.045 * H, shY = y0 + 0.77 * H, elY = y0 + 0.60 * H;
   const bones = [], bone = (name, x, y, z, parent) => { const b = new THREE.Bone(); b.name = 'rig_' + name; b.position.set(x, y, z); parent.add(b); bones.push(b); return b; };
-  // index: 0 base | 1 hip+ 2 knee+ | 3 hip- 4 knee- | 5 shoulder+ 6 elbow+ | 7 shoulder- 8 elbow-
+  // index: 0 base | 1 hip+ 2 knee+ | 3 hip- 4 knee- | 5 shoulder+ 6 elbow+ | 7 shoulder- 8 elbow- | 9 ankle+ 10 ankle-
   const base = bone('base', 0, 0, 0, root);
   const hipP = bone('hip+', 0.055 * H, hipY, 0, base), kneeP = bone('knee+', 0, kneeY - hipY, 0, hipP);
   const hipN = bone('hip-', -0.055 * H, hipY, 0, base), kneeN = bone('knee-', 0, kneeY - hipY, 0, hipN);
   const shP = bone('sh+', 0.125 * H, shY, 0, base), elP = bone('el+', 0, elY - shY, 0, shP);
   const shN = bone('sh-', -0.125 * H, shY, 0, base), elN = bone('el-', 0, elY - shY, 0, shN);
+  const anP = bone('ankle+', 0, ankleY - kneeY, 0, kneeP), anN = bone('ankle-', 0, ankleY - kneeY, 0, kneeN);
   root.updateMatrixWorld(true);
   const skeleton = new THREE.Skeleton(bones);
 
   const targets = []; root.traverse(o => { if (o.isMesh && !o.isSkinnedMesh && o.geometry.attributes.position && !underHead(o, root)) targets.push(o); });
   const anyLegNamed = targets.some(o => LEG_RE.test(chainName(o, root)));
   const rootInv = new THREE.Matrix4().copy(root.matrixWorld).invert(), toRoot = new THREE.Matrix4();
-  const w = new Float32Array(9), order = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+  const w = new Float32Array(11), order = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
   let touched = 0;
 
   // Pass 1: split every mesh into islands and classify them, so pass 2 can see the whole model (is anything a separate sleeve?
@@ -330,7 +334,9 @@ function buildRig(root, box) {
       const legW = islandArms && b.arm ? 0 : (1 - armW) * sstep(hipY + 0.02 * H, hipY - 0.06 * H, vy);
       // Clothing that hangs over the thighs (jacket hem, shirt tail) sits only a millimetre or so outside the trouser legs, so a
       // swinging thigh would show straight through it. Flare that skirt out by ~1 cm, fading to nothing above the hips.
-      if (!named && armW === 0 && !(islandArms && b.arm)) {
+      // Pieces that reach below the knees are left alone: bare legs or socks are not clothing draped over the thighs, and
+      // pushing them outwards would shove the ankles out of the shoes.
+      if (!named && armW === 0 && !(islandArms && b.arm) && b.y0 > kneeY) {
         const f = 0.007 * H * sstep(hipY + 0.03 * H, hipY - 0.03 * H, vy), vz = isl.P[i * 3 + 2], r = Math.hypot(vx, vz);
         if (f > 0 && r > 1e-4) { vv.set(vx + vx / r * f, vy, vz + vz / r * f).applyMatrix4(fromRoot); geo.attributes.position.setXYZ(i, vv.x, vv.y, vv.z); }
       }
@@ -345,7 +351,10 @@ function buildRig(root, box) {
         // seam does not tear open when one thigh swings forward and the other back
         const bw = (0.006 + (named ? 0.019 : 0.039) * sstep(hipY - (named ? 0.08 : 0.085) * H, hipY - (named ? 0.03 : 0.05) * H, vy)) * H;
         const sp = named && !b.straddle ? (b.side > 0 ? 1 : 0) : sstep(-bw, bw, vx), k = sstep(kneeY + 0.04 * H, kneeY - 0.04 * H, vy);
-        w[1] = legW * sp * (1 - k); w[2] = legW * sp * k; w[3] = legW * (1 - sp) * (1 - k); w[4] = legW * (1 - sp) * k;
+        // the foot, and progressively the ankle / shoe shaft / trouser cuff above it, follow the ankle bone so the sole can stay level
+        const af = k * sstep(ankleY + 0.07 * H, ankleY + 0.01 * H, vy);
+        w[1] = legW * sp * (1 - k); w[2] = legW * sp * (k - af); w[9] = legW * sp * af;
+        w[3] = legW * (1 - sp) * (1 - k); w[4] = legW * (1 - sp) * (k - af); w[10] = legW * (1 - sp) * af;
       }
       order.sort((a, b) => w[b] - w[a]);
       const sum = w[order[0]] + w[order[1]] + w[order[2]] + w[order[3]] || 1;
@@ -360,7 +369,7 @@ function buildRig(root, box) {
     root.updateMatrixWorld(true); sm.bind(skeleton);
   }
   if (!touched) return null;
-  return { hipP, kneeP, hipN, kneeN, shP, elP, shN, elN, legLen: hipY - y0 };
+  return { hipP, kneeP, hipN, kneeN, anP, anN, shP, elP, shN, elN, legLen: hipY - y0, footH: ankleY - y0 };
 }
 
 /* ------------------------------------------------------------ layout/camera */
@@ -381,7 +390,7 @@ let m_total = 1, m_refH = 1.7;
 function frame() {
   if (!m_refH) return;
   const t = Math.tan(rad(camera.fov / 2)), freeAspect = Math.max((innerWidth - panelInset()) / innerHeight, 0.3);
-  const dist = Math.max(m_refH * 1.3 / (2 * t), m_total * 1.25 / (2 * t * freeAspect), 1.2);
+  const dist = clamp(Math.max(m_refH * 1.3 / (2 * t), m_total * 1.25 / (2 * t * freeAspect), 1.2), controls.minDistance, controls.maxDistance);
   frameGoal = { target: new THREE.Vector3(0, m_refH * 0.5, 0), dist };
 }
 controls.addEventListener('start', () => { frameGoal = null; });
@@ -463,17 +472,18 @@ function pose(m, dt, ph, amt) {
   else {
     const s = Math.sin(ph), c = Math.cos(ph), A = rad(S.stride) * amt;
     let bob;
-    if (m.rig) bob = -S.bob * m.rig.legLen * (1 - Math.cos(A * Math.abs(s)));       // keeps the planted foot on the floor
+    if (m.rig) bob = -S.bob * (m.rig.legLen - m.rig.footH) * (1 - Math.cos(A * Math.abs(s)));   // keeps the planted foot on the floor
     else bob = S.bob * 0.012 * m.h * amt * (0.5 + 0.5 * Math.cos(2 * ph));
     b.position.set(S.sway * 0.01 * k * amt * -c, bob, 0);
     b.rotation.set(rad(S.lean) * amt, 0, rad(S.tilt) * amt * c);
     const r = m.rig;
     if (r) {
       const K = rad(S.knee) * amt, Sw = rad(S.arms) * amt, E = rad(S.elbow) * amt, Out = rad(S.armOut) * amt;
-      for (const [side, hip, knee, sh, el] of [[1, r.hipP, r.kneeP, r.shP, r.elP], [-1, r.hipN, r.kneeN, r.shN, r.elN]]) {
+      for (const [side, hip, knee, ankle, sh, el] of [[1, r.hipP, r.kneeP, r.anP, r.shP, r.elP], [-1, r.hipN, r.kneeN, r.anN, r.shN, r.elN]]) {
         const sp = s * side, cp = c * side;              // this leg's swing and its velocity
         hip.rotation.x = -A * sp;                        // forward swing = negative X rotation for a limb hanging down
         knee.rotation.x = K * Math.max(0, cp);           // knee folds while the leg swings forward
+        ankle.rotation.x = -(hip.rotation.x + knee.rotation.x) - b.rotation.x;   // sole stays level: no toes or heels dipping through the floor
         const arm = -sp;                                 // arms swing against the leg on the same side
         sh.rotation.x = -Sw * arm;
         sh.rotation.z = side * Out;                      // arms hang slightly away from the body so sleeves clear the jacket and thighs
@@ -520,6 +530,13 @@ function tick(forcedDt) {
   controls.update(); renderer.render(scene, camera);
 }
 renderer.setAnimationLoop(() => tick());
+
+// Handle for scripted checks from the browser console: camera, settings, a fixed gait phase and a PNG of the current view.
+// e.g.  __viewer.S.speed = 0; __viewer.setPhase(Math.PI / 2); __viewer.grab()
+// grab(steps) first advances the scene by that many 50 ms steps itself, so it also works while the tab is hidden (no animation frames).
+window.__viewer = { S, models, camera, controls, scene, frame, setPhase: p => { phase = p; },
+  grab: (steps = 0) => { frameGoal = null; for (let i = 0; i < steps; i++) tick(0.05); frameGoal = null; tick(0);
+    return renderer.domElement.toDataURL('image/png'); } };
 
 updateView(); document.body.classList.toggle('collapsed', !panelOpen);
 scan(true).then(() => { updateHud(); const m = models.find(x => x.enabled); if (m) { controls.target.set(0, 0.85, 0); camera.position.set(0, 1, 6); } frame(); })
