@@ -55,7 +55,6 @@ a:hover { text-decoration-thickness: 2px; }
   background: linear-gradient(90deg, var(--flame) 50%, var(--blazer) 50%); touch-action: pan-y; }
 .hero.can-grab { cursor: grab; }
 .hero.dragging { cursor: grabbing; }
-.hero a, .hero p { cursor: auto; }
 .hero a { cursor: pointer; }
 
 .hero-nav { position: absolute; inset: 0 0 auto; z-index: 3; display: grid; grid-template-columns: 1fr 1fr; padding: 22px 0; font-size: 0.95rem; font-weight: 500; }
@@ -75,7 +74,7 @@ a:hover { text-decoration-thickness: 2px; }
 /* a caption under each figure, like the nameplate on a display stand; hero.js puts the floor just above this block */
 .hero-blurbs { position: absolute; inset: auto 0 0; z-index: 3; display: grid; grid-template-columns: 1fr 1fr; align-items: start;
   padding-bottom: clamp(10px, 2svh, 18px); pointer-events: none; font-size: 1rem; line-height: 1.4; text-align: center; }
-.hero-blurbs p { pointer-events: auto; }
+.hero-blurbs p { user-select: none; -webkit-user-select: none; }   /* click-through: drag the figure behind the text */
 .blurb-marius, .blurb-toma { max-width: 23em; margin: 0 auto; padding: 0 16px; }
 .blurb-marius { color: var(--ink); font-weight: 500; }
 .blurb-toma { color: var(--tee); }

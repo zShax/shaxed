@@ -126,12 +126,12 @@ function start() {
   let drag = null;
   addEventListener('pointermove', e => {
     pointer.x = e.clientX; pointer.y = e.clientY;
-    if (!drag && e.pointerType !== 'touch') hero.classList.toggle('can-grab', !e.target.closest?.('a, p') && !!figAt(e.clientX, e.clientY));
+    if (!drag && e.pointerType !== 'touch') hero.classList.toggle('can-grab', !e.target.closest?.('a') && !!figAt(e.clientX, e.clientY));
   }, { passive: true });
   addEventListener('scroll', () => { rect = hero.getBoundingClientRect(); }, { passive: true });
 
   hero.addEventListener('pointerdown', e => {
-    if (e.button || e.target.closest('a, p')) return;
+    if (e.button || e.target.closest('a')) return;
     const f = figAt(e.clientX, e.clientY);
     if (!f) return;
     pointer.x = e.clientX; pointer.y = e.clientY;
