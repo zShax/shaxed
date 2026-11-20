@@ -181,7 +181,7 @@ function glance(cv) {
 /* ------------------------------------------------------------------ home */
 export function home(latestPosts) {
   const cv = getCv();
-  const description = 'Marius Toma, full-stack web developer and founder in Arad, Romania. CV, live projects and blog.';
+  const description = 'Marius Toma, software engineer and founder in Arad, Romania. CV, live projects and blog.';
   const head = `<link rel="preload" href="/fonts/bodoni/bodoni-moda-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
 <script type="module" src="${asset('/js/hero.js')}"></script>`;
 
@@ -275,7 +275,7 @@ export function home(latestPosts) {
 </main>
 
 ${contactFooter()}`;
-  return layout({ title: 'Marius Toma, full-stack web developer', description, path: '/', body, head, bodyClass: 'home',
+  return layout({ title: 'Marius Toma, software engineer', description, path: '/', body, head, bodyClass: 'home',
     imports: { three: '/vendor/three/build/three.module.min.js', 'three/addons/': '/vendor/three/addons/' } });
 }
 
